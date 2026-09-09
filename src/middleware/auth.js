@@ -1,0 +1,70 @@
+const { verifyAccessToken } = require('../utils/jwt');
+const { User, Role } = require('../models');
+
+/**
+ * Routes that do NOT require an authenticated account. Everything else
+ * in the API is blocked for unauthenticated ("guest") requests — this
+ * is the "Account Enforcement" deliverable.
+ *
+ * Keep this list tight and explicit rather than pattern-matching, so
+ * a new route is secure-by-default unless someone deliberately opts
+ * it out here.
+ */
+const PUBLIC_ROUTES = [
+  { method: 'GET', path: '/health' },
+  { method: 'POST', path: '/api/auth/register' },
+  { method: 'POST', path: '/api/auth/login' },
+  { method: 'POST', path: '/api/auth/refresh' },
+];
+
+function isPublicRoute(req) {
+  return PUBLIC_ROUTES.some(
+    (route) => route.method === req.method && req.path === route.path
+  );
+}
+
+/**
+ * Verifies the access token from the Authorization header, loads the
+ * corresponding active user, and attaches it to req.user. Rejects the
+ * request with 401 for anything invalid, expired, or missing — there
+ * is no "guest" fallthrough.
+ */
+async function authenticate(req, res, next) {
+  if (isPublicRoute(req)) return next();
+
+  const authHeader = req.headers.authorization || '';
+  const [scheme, token] = authHeader.split(' ');
+
+  if (scheme !== 'Bearer' || !token) {
+    return res.status(401).json({ error: 'Authentication required. No token provided.' });
+  }
+
+  let payload;
+  try {
+    payload = verifyAccessToken(token);
+  } catch (err) {
+    const message =
+      err.name === 'TokenExpiredError' ? 'Access token expired.' : 'Invalid access token.';
+    return res.status(401).json({ error: message });
+  }
+
+  if (payload.type !== 'access') {
+    return res.status(401).json({ error: 'Invalid token type for this endpoint.' });
+  }
+
+  const user = await User.findByPk(payload.sub, { include: Role });
+  if (!user || !user.isActive) {
+    return res.status(401).json({ error: 'Account not found or has been deactivated.' });
+  }
+
+  req.user = {
+    id: user.id,
+    email: user.email,
+    role: user.Role.name,
+    organisationId: user.organisationId,
+  };
+
+  next();
+}
+
+module.exports = { authenticate, PUBLIC_ROUTES };

@@ -1,0 +1,202 @@
+-- =====================================================================
+-- ConnectSphere Event Planning & Venue Booking System
+-- Task 1: Database Schema Initialisation
+--
+-- Covers: Users, Roles, Events, EventRequests, Venues, Equipment
+-- (plus minimal supporting tables needed for referential integrity:
+--  client_organisations, refresh_tokens)
+--
+-- Design notes (per Week 1 Customer Briefing & Week 4 Core Features):
+-- - 5 roles: event_organiser, event_coordinator, venue_staff,
+--   technical_support_staff, attendee.
+-- - An EventRequest is what an Event Organiser drafts/submits. Once a
+--   Coordinator is assigned and the request is approved, an Event row
+--   is created to track downstream planning (venue/equipment/status).
+--   This keeps "draft/submitted/under review" concerns (EventRequest)
+--   separate from "planning/confirmed/completed" concerns (Event),
+--   matching the distinct statuses described in the briefing.
+-- =====================================================================
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto"; -- for gen_random_uuid()
+
+-- ---------------------------------------------------------------------
+-- ROLES
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS roles (
+    id              SMALLSERIAL PRIMARY KEY,
+    name            VARCHAR(50) NOT NULL UNIQUE, -- e.g. 'event_organiser'
+    display_name    VARCHAR(100) NOT NULL,       -- e.g. 'Event Organiser'
+    description     TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- CLIENT ORGANISATIONS (external orgs that Event Organisers belong to)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS client_organisations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            VARCHAR(200) NOT NULL,
+    contact_email   VARCHAR(255),
+    contact_phone   VARCHAR(30),
+    address         TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- USERS
+-- Single table for all 5 roles; role-specific optional fields kept
+-- nullable (e.g. department is only meaningful for internal staff).
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email               VARCHAR(255) NOT NULL UNIQUE,
+    password_hash       VARCHAR(255) NOT NULL,
+    first_name          VARCHAR(100) NOT NULL,
+    last_name           VARCHAR(100) NOT NULL,
+    phone               VARCHAR(30),
+    role_id             SMALLINT NOT NULL REFERENCES roles(id),
+    organisation_id     UUID REFERENCES client_organisations(id), -- Event Organisers only
+    department          VARCHAR(100), -- internal staff only
+    communication_prefs JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_users_role_id ON users(role_id);
+CREATE INDEX IF NOT EXISTS idx_users_organisation_id ON users(organisation_id);
+
+-- ---------------------------------------------------------------------
+-- REFRESH TOKENS (for session/token management & revocation)
+-- Only a hash of the refresh token is stored, never the raw token.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash      VARCHAR(255) NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    revoked_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+
+-- ---------------------------------------------------------------------
+-- VENUES
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venues (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                    VARCHAR(200) NOT NULL,
+    location                VARCHAR(255) NOT NULL,
+    capacity                INTEGER NOT NULL CHECK (capacity > 0),
+    supported_layouts       JSONB NOT NULL DEFAULT '[]'::jsonb, -- e.g. ["classroom","theatre"]
+    facilities              JSONB NOT NULL DEFAULT '[]'::jsonb,
+    accessibility_features  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    operating_hours_start   TIME NOT NULL DEFAULT '08:00',
+    operating_hours_end     TIME NOT NULL DEFAULT '22:00',
+    setup_minutes           INTEGER NOT NULL DEFAULT 30,   -- prep time needed before an event
+    teardown_minutes        INTEGER NOT NULL DEFAULT 30,   -- turnaround time needed after
+    status                  VARCHAR(20) NOT NULL DEFAULT 'available'
+                                CHECK (status IN ('available','maintenance','blocked')),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- EQUIPMENT
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS equipment (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                VARCHAR(200) NOT NULL,
+    type                VARCHAR(100) NOT NULL, -- e.g. 'AV', 'furniture', 'networking'
+    description         TEXT,
+    quantity_total      INTEGER NOT NULL CHECK (quantity_total >= 0),
+    quantity_available  INTEGER NOT NULL CHECK (quantity_available >= 0),
+    location            VARCHAR(255),
+    status              VARCHAR(20) NOT NULL DEFAULT 'available'
+                            CHECK (status IN ('available','maintenance','damaged')),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (quantity_available <= quantity_total)
+);
+
+-- ---------------------------------------------------------------------
+-- EVENT REQUESTS
+-- Created by an Event Organiser; tracks the request lifecycle up to
+-- the initial approval decision.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS event_requests (
+    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organiser_id                UUID NOT NULL REFERENCES users(id),
+    organisation_id             UUID REFERENCES client_organisations(id),
+    event_name                  VARCHAR(200) NOT NULL,
+    description                 TEXT,
+    purpose                     TEXT,
+    category                    VARCHAR(50), -- conference, workshop, training, exhibition, etc.
+    preferred_start             TIMESTAMPTZ NOT NULL,
+    preferred_end                TIMESTAMPTZ NOT NULL,
+    expected_attendance         INTEGER NOT NULL CHECK (expected_attendance > 0),
+    venue_requirements          TEXT,
+    accessibility_requirements  TEXT,
+    equipment_requirements      TEXT,
+    registration_required       BOOLEAN NOT NULL DEFAULT false,
+    status                      VARCHAR(20) NOT NULL DEFAULT 'draft'
+                                    CHECK (status IN
+                                        ('draft','submitted','under_review','approved','rejected','returned')),
+    submitted_at                TIMESTAMPTZ,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (preferred_end > preferred_start)
+);
+CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
+CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);
+
+-- ---------------------------------------------------------------------
+-- EVENTS
+-- Created once an EventRequest is approved and a Coordinator assigned.
+-- Tracks the operational planning lifecycle.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS events (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_request_id    UUID NOT NULL UNIQUE REFERENCES event_requests(id),
+    coordinator_id      UUID REFERENCES users(id),
+    venue_id            UUID REFERENCES venues(id),
+    start_datetime      TIMESTAMPTZ NOT NULL,
+    end_datetime        TIMESTAMPTZ NOT NULL,
+    status              VARCHAR(30) NOT NULL DEFAULT 'planning'
+                            CHECK (status IN
+                                ('planning','awaiting_arrangements','confirmed','completed','cancelled')),
+    confirmed_at         TIMESTAMPTZ,
+    cancelled_at         TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_events_coordinator_id ON events(coordinator_id);
+CREATE INDEX IF NOT EXISTS idx_events_venue_id ON events(venue_id);
+CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+
+-- ---------------------------------------------------------------------
+-- Trigger to auto-maintain updated_at columns
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+    t TEXT;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events']
+    LOOP
+        EXECUTE format(
+            'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;
+             CREATE TRIGGER trg_set_updated_at BEFORE UPDATE ON %I
+             FOR EACH ROW EXECUTE FUNCTION set_updated_at();', t, t
+        );
+    END LOOP;
+END;
+$$;
