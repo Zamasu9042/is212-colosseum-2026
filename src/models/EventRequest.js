@@ -33,6 +33,9 @@ EventRequest.init(
       defaultValue: 'draft',
     },
     submittedAt: { type: DataTypes.DATE, field: 'submitted_at' },
+    reviewReason: { type: DataTypes.TEXT, field: 'review_reason' },
+    reviewedAt: { type: DataTypes.DATE, field: 'reviewed_at' },
+    reviewedBy: { type: DataTypes.UUID, field: 'reviewed_by' },
   },
   {
     sequelize,

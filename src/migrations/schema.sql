@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS event_requests (
                                     CHECK (status IN
                                         ('draft','submitted','under_review','approved','rejected','returned')),
     submitted_at                TIMESTAMPTZ,
+    review_reason               TEXT,
+    reviewed_at                 TIMESTAMPTZ,
+    reviewed_by                 UUID REFERENCES users(id),
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (preferred_end > preferred_start)
