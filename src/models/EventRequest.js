@@ -8,18 +8,20 @@ EventRequest.init(
     id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     organiserId: { type: DataTypes.UUID, allowNull: false, field: 'organiser_id' },
     organisationId: { type: DataTypes.UUID, field: 'organisation_id' },
-    eventName: { type: DataTypes.STRING(200), allowNull: false, field: 'event_name' },
+
+
+    eventName: { type: DataTypes.STRING(200), field: 'event_name' },
+    preferredStart: { type: DataTypes.DATE, field: 'preferred_start' },
+    preferredEnd: { type: DataTypes.DATE, field: 'preferred_end' },
+    expectedAttendance: {
+      type: DataTypes.INTEGER,
+      validate: { min: 1 }, // still enforced if a value is provided; null is fine
+      field: 'expected_attendance',
+    },
+
     description: { type: DataTypes.TEXT },
     purpose: { type: DataTypes.TEXT },
     category: { type: DataTypes.STRING(50) },
-    preferredStart: { type: DataTypes.DATE, allowNull: false, field: 'preferred_start' },
-    preferredEnd: { type: DataTypes.DATE, allowNull: false, field: 'preferred_end' },
-    expectedAttendance: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      validate: { min: 1 },
-      field: 'expected_attendance',
-    },
     venueRequirements: { type: DataTypes.TEXT, field: 'venue_requirements' },
     accessibilityRequirements: { type: DataTypes.TEXT, field: 'accessibility_requirements' },
     equipmentRequirements: { type: DataTypes.TEXT, field: 'equipment_requirements' },

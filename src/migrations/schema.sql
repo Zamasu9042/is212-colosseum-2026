@@ -15,6 +15,12 @@
 --   This keeps "draft/submitted/under review" concerns (EventRequest)
 --   separate from "planning/confirmed/completed" concerns (Event),
 --   matching the distinct statuses described in the briefing.
+-- - event_name, preferred_start, preferred_end, and expected_attendance
+--   are intentionally NOT marked NOT NULL: an Event Organiser must be
+--   able to save an incomplete request as a draft (Sprint 1 — "Save
+--   Event Request as Draft"). These fields are only required once a
+--   request is actually submitted, which is enforced at the
+--   application layer, not by the schema.
 -- =====================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto"; -- for gen_random_uuid()
@@ -123,18 +129,25 @@ CREATE TABLE IF NOT EXISTS equipment (
 -- EVENT REQUESTS
 -- Created by an Event Organiser; tracks the request lifecycle up to
 -- the initial approval decision.
+--
+-- event_name, preferred_start, preferred_end, and expected_attendance
+-- are nullable so a draft can be saved incomplete (see file header
+-- note). Their CHECK constraints below still apply IF a value is
+-- present, but pass automatically when the value is null, since a
+-- comparison against NULL in Postgres evaluates to NULL and is
+-- treated as satisfying the CHECK.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS event_requests (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organiser_id                UUID NOT NULL REFERENCES users(id),
     organisation_id             UUID REFERENCES client_organisations(id),
-    event_name                  VARCHAR(200) NOT NULL,
+    event_name                  VARCHAR(200),
     description                 TEXT,
     purpose                     TEXT,
     category                    VARCHAR(50), -- conference, workshop, training, exhibition, etc.
-    preferred_start             TIMESTAMPTZ NOT NULL,
-    preferred_end                TIMESTAMPTZ NOT NULL,
-    expected_attendance         INTEGER NOT NULL CHECK (expected_attendance > 0),
+    preferred_start             TIMESTAMPTZ,
+    preferred_end                TIMESTAMPTZ,
+    expected_attendance         INTEGER CHECK (expected_attendance > 0),
     venue_requirements          TEXT,
     accessibility_requirements  TEXT,
     equipment_requirements      TEXT,
@@ -148,7 +161,7 @@ CREATE TABLE IF NOT EXISTS event_requests (
     reviewed_by                 UUID REFERENCES users(id),
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (preferred_end > preferred_start)
+    CHECK (preferred_end IS NULL OR preferred_start IS NULL OR preferred_end > preferred_start)
 );
 CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);

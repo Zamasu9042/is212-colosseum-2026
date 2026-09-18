@@ -18,8 +18,9 @@ const PUBLIC_ROUTES = [
 ];
 
 function isPublicRoute(req) {
+  const path = req.originalUrl.split('?')[0]; // originalUrl survives mount-prefix stripping
   return PUBLIC_ROUTES.some(
-    (route) => route.method === req.method && req.path === route.path
+    (route) => route.method === req.method && path === route.path
   );
 }
 
