@@ -1,6 +1,7 @@
 const express = require('express');
+const { Op } = require('sequelize');
 const { body } = require('express-validator');
-const { EventRequest } = require('../models');
+const { EventRequest, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -52,6 +53,12 @@ const draftValidators = [
   body('registrationRequired').optional({ nullable: true }).isBoolean(),
 ];
 
+const organiserInclude = {
+  model: User,
+  as: 'organiser',
+  attributes: ['id', 'email', 'firstName', 'lastName', 'organisationId'],
+};
+
 // Only Event Organisers can create requests (Attendees, staff cannot).
 // Saving here always produces a 'draft' — there is no way for the
 // client to set status via this endpoint, so this alone can never
@@ -102,6 +109,27 @@ router.get(
   }
 );
 
+// Event Coordinators review submitted requests from this queue. It
+// deliberately excludes drafts (still private working copies) and final
+// outcomes such as approved/rejected/returned.
+router.get(
+  '/review-queue',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_COORDINATOR),
+  async (req, res, next) => {
+    try {
+      const requests = await EventRequest.findAll({
+        where: { status: { [Op.in]: ['submitted', 'under_review'] } },
+        include: [organiserInclude],
+        order: [['updated_at', 'DESC']],
+      });
+      res.json({ eventRequests: requests });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // Event Coordinators can view any request (to review/assign).
 // An Event Organiser may only view their OWN request — this enforces
 // the briefing's requirement that an Organiser should not see events
@@ -118,7 +146,7 @@ router.get(
   ),
   async (req, res, next) => {
     try {
-      const request = await EventRequest.findByPk(req.params.id);
+      const request = await EventRequest.findByPk(req.params.id, { include: [organiserInclude] });
       if (!request) return res.status(404).json({ error: 'Event request not found.' });
       res.json({ eventRequest: request });
     } catch (err) {
@@ -170,14 +198,32 @@ router.patch(
   async (req, res, next) => {
     try {
       const { status } = req.body;
-      const validStatuses = ['under_review', 'approved', 'rejected', 'returned'];
+      const reviewReason =
+        typeof req.body.reviewReason === 'string' ? req.body.reviewReason.trim() : null;
+      const validStatuses = ['approved', 'rejected', 'returned'];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
       }
+
+      if (status === 'rejected' && !reviewReason) {
+        return res.status(400).json({ error: 'reviewReason is required when rejecting a request.' });
+      }
+
       const request = await EventRequest.findByPk(req.params.id);
       if (!request) return res.status(404).json({ error: 'Event request not found.' });
-      request.status = status;
-      await request.save();
+
+      if (!['submitted', 'under_review'].includes(request.status)) {
+        return res
+          .status(409)
+          .json({ error: 'Only submitted or under review requests can be reviewed.' });
+      }
+
+      await request.update({
+        status,
+        reviewReason,
+        reviewedAt: new Date(),
+        reviewedBy: req.user.id,
+      });
       res.json({ eventRequest: request });
     } catch (err) {
       next(err);
