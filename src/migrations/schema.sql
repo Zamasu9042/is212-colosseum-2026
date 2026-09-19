@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS venues (
     name                    VARCHAR(200) NOT NULL,
     location                VARCHAR(255) NOT NULL,
     capacity                INTEGER NOT NULL CHECK (capacity > 0),
+    venue_type              VARCHAR(50), -- e.g. "ballroom","conference_room","auditorium","meeting_room","outdoor_space"
     supported_layouts       JSONB NOT NULL DEFAULT '[]'::jsonb, -- e.g. ["classroom","theatre"]
     facilities              JSONB NOT NULL DEFAULT '[]'::jsonb,
     accessibility_features  JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -106,6 +107,15 @@ CREATE TABLE IF NOT EXISTS venues (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Added alongside Venue Searching and Filtering: ADD COLUMN IF NOT EXISTS
+-- keeps this idempotent for databases that already ran an earlier version
+-- of this script (matches the CREATE TABLE IF NOT EXISTS pattern above).
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS venue_type VARCHAR(50);
+
+CREATE INDEX IF NOT EXISTS idx_venues_venue_type ON venues(venue_type);
+CREATE INDEX IF NOT EXISTS idx_venues_capacity ON venues(capacity);
+CREATE INDEX IF NOT EXISTS idx_venues_facilities ON venues USING GIN (facilities);
 
 -- ---------------------------------------------------------------------
 -- EQUIPMENT
