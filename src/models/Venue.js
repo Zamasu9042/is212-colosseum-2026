@@ -9,10 +9,6 @@ Venue.init(
     name: { type: DataTypes.STRING(200), allowNull: false },
     location: { type: DataTypes.STRING(255), allowNull: false },
     capacity: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1 } },
-    venueType: {
-      type: DataTypes.STRING(50),
-      field: 'venue_type',
-    },
     supportedLayouts: {
       type: DataTypes.JSONB,
       defaultValue: [],

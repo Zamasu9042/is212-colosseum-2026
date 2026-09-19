@@ -87,37 +87,6 @@ curl -X POST http://localhost:4000/api/auth/login \
 # → returns an accessToken; use it as: Authorization: Bearer <token>
 ```
 
-### 6a. Try venue searching and filtering
-
-```bash
-# Search by name or location, filter by capacity/type/facilities, sort results
-curl -G http://localhost:4000/api/venues \
-  -H "Authorization: Bearer <accessToken>" \
-  --data-urlencode "search=marina" \
-  --data-urlencode "minCapacity=100" \
-  --data-urlencode "venueType=Ballroom,Auditorium" \
-  --data-urlencode "facilities=projector,wifi" \
-  --data-urlencode "availability=available" \
-  --data-urlencode "sortBy=capacity" \
-  --data-urlencode "sortOrder=desc"
-
-# Check a specific venue against a proposed date/time (accounts for the
-# venue's own setup/teardown turnaround time), then select it for review
-curl -G http://localhost:4000/api/venues/<venueId> \
-  -H "Authorization: Bearer <accessToken>" \
-  --data-urlencode "startDateTime=2026-10-01T09:00:00Z" \
-  --data-urlencode "endDateTime=2026-10-01T12:00:00Z"
-```
-
-Supported `GET /api/venues` query params (all optional, combinable):
-`search`, `name`, `location`, `minCapacity`/`capacity`, `maxCapacity`,
-`venueType` (comma-separated), `facilities` (comma-separated, venue must
-have all), `availability` (`available`|`unavailable`), `startDateTime` +
-`endDateTime` (ISO8601, required together), `sortBy`
-(`name`|`location`|`capacity`|`availability`), `sortOrder` (`asc`|`desc`).
-When nothing matches, the response includes a `message` field alongside
-an empty `venues` array.
-
 ### 7. Run the tests
 
 ```bash

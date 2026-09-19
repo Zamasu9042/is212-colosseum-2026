@@ -15,11 +15,6 @@ const PUBLIC_ROUTES = [
   { method: 'POST', path: '/api/auth/register' },
   { method: 'POST', path: '/api/auth/login' },
   { method: 'POST', path: '/api/auth/refresh' },
-  // Logout only needs the httpOnly refreshToken cookie to revoke the
-  // session server-side — requiring a *valid* access token here would
-  // mean a user whose access token has already expired (a common case,
-  // since access tokens are short-lived) could never log out.
-  { method: 'POST', path: '/api/auth/logout' },
 ];
 
 function isPublicRoute(req) {
