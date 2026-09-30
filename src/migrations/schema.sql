@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone               VARCHAR(30),
     role_id             SMALLINT NOT NULL REFERENCES roles(id),
     organisation_id     UUID REFERENCES client_organisations(id), -- Event Organisers only
+    organisation        VARCHAR(200), -- attendee-provided organisation name
     department          VARCHAR(100), -- internal staff only
     communication_prefs JSONB NOT NULL DEFAULT '{}'::jsonb,
     is_active           BOOLEAN NOT NULL DEFAULT true,
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS venues (
 -- keeps this idempotent for databases that already ran an earlier version
 -- of this script (matches the CREATE TABLE IF NOT EXISTS pattern above).
 ALTER TABLE venues ADD COLUMN IF NOT EXISTS venue_type VARCHAR(50);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS organisation VARCHAR(200);
 
 CREATE INDEX IF NOT EXISTS idx_venues_venue_type ON venues(venue_type);
 CREATE INDEX IF NOT EXISTS idx_venues_capacity ON venues(capacity);
