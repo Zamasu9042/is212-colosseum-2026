@@ -7,6 +7,8 @@ const Venue = require('./Venue');
 const Equipment = require('./Equipment');
 const EventRequest = require('./EventRequest');
 const Event = require('./Event');
+const EventProgramme = require('./EventProgramme');
+const AgendaItem = require('./AgendaItem');
 
 // --- Associations ---
 
@@ -42,6 +44,18 @@ Event.belongsTo(User, { foreignKey: 'coordinatorId', as: 'coordinator' });
 Venue.hasMany(Event, { foreignKey: 'venueId' });
 Event.belongsTo(Venue, { foreignKey: 'venueId' });
 
+// Event <-> EventProgramme (1:1)
+Event.hasOne(EventProgramme, { foreignKey: 'eventId', onDelete: 'CASCADE' });
+EventProgramme.belongsTo(Event, { foreignKey: 'eventId' });
+
+// EventProgramme <-> AgendaItem (1:many)
+EventProgramme.hasMany(AgendaItem, {
+  foreignKey: 'programmeId',
+  as: 'agendaItems',
+  onDelete: 'CASCADE',
+});
+AgendaItem.belongsTo(EventProgramme, { foreignKey: 'programmeId' });
+
 module.exports = {
   sequelize,
   Role,
@@ -53,4 +67,6 @@ module.exports = {
   Equipment,
   EventRequest,
   Event,
+  EventProgramme,
+  AgendaItem,
 };

@@ -202,6 +202,50 @@ CREATE INDEX IF NOT EXISTS idx_events_venue_id ON events(venue_id);
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 
 -- ---------------------------------------------------------------------
+-- EVENT PROGRAMMES & AGENDA ITEMS
+-- An Event Coordinator builds a programme (the schedule) for a
+-- confirmed Event, made up of ordered agenda items. A programme starts
+-- as a draft the Coordinator can keep editing, then is explicitly
+-- published so Attendees can see it.
+--
+-- One programme per Event (enforced by the UNIQUE on event_id).
+-- sort_order is an explicit integer the Coordinator controls directly
+-- via the reorder endpoint, rather than being inferred from start_time
+-- — this keeps "reorder" and "reschedule" as distinct actions, and
+-- still lets the published view simply sort by start_time for display
+-- (chronological order), independent of how items were authored.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS event_programmes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id        UUID NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+    status          VARCHAR(20) NOT NULL DEFAULT 'draft'
+                        CHECK (status IN ('draft', 'published')),
+    published_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS agenda_items (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    programme_id    UUID NOT NULL REFERENCES event_programmes(id) ON DELETE CASCADE,
+    title           VARCHAR(200) NOT NULL,
+    description     TEXT,
+    start_time      TIMESTAMPTZ NOT NULL,
+    end_time        TIMESTAMPTZ NOT NULL,
+    speaker         VARCHAR(200),
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    -- Explicit per-item override for the "prevent overlap unless
+    -- explicitly permitted" AC: set true to allow this item to overlap
+    -- with others (e.g. concurrent breakout sessions).
+    allow_overlap   BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_time > start_time)
+);
+CREATE INDEX IF NOT EXISTS idx_agenda_items_programme_id ON agenda_items(programme_id);
+CREATE INDEX IF NOT EXISTS idx_agenda_items_start_time ON agenda_items(start_time);
+
+-- ---------------------------------------------------------------------
 -- Trigger to auto-maintain updated_at columns
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -216,7 +260,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;
