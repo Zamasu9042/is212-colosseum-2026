@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone               VARCHAR(30),
     role_id             SMALLINT NOT NULL REFERENCES roles(id),
     organisation_id     UUID REFERENCES client_organisations(id), -- Event Organisers only
+    organisation        VARCHAR(200), -- attendee-provided organisation name
     department          VARCHAR(100), -- internal staff only
     communication_prefs JSONB NOT NULL DEFAULT '{}'::jsonb,
     is_active           BOOLEAN NOT NULL DEFAULT true,
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS venues (
 -- keeps this idempotent for databases that already ran an earlier version
 -- of this script (matches the CREATE TABLE IF NOT EXISTS pattern above).
 ALTER TABLE venues ADD COLUMN IF NOT EXISTS venue_type VARCHAR(50);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS organisation VARCHAR(200);
 
 CREATE INDEX IF NOT EXISTS idx_venues_venue_type ON venues(venue_type);
 CREATE INDEX IF NOT EXISTS idx_venues_capacity ON venues(capacity);
@@ -159,7 +161,10 @@ CREATE TABLE IF NOT EXISTS event_requests (
     preferred_end                TIMESTAMPTZ,
     expected_attendance         INTEGER CHECK (expected_attendance > 0),
     venue_requirements          TEXT,
+    requested_layout            VARCHAR(100), -- theatre, classroom, banquet, etc.
     accessibility_requirements  TEXT,
+    facility_requirements       TEXT,
+    setup_requirements          TEXT,
     equipment_requirements      TEXT,
     registration_required       BOOLEAN NOT NULL DEFAULT false,
     status                      VARCHAR(20) NOT NULL DEFAULT 'draft'
@@ -175,6 +180,12 @@ CREATE TABLE IF NOT EXISTS event_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);
+
+-- Keep existing development databases compatible when this feature is added
+-- after the original event_requests table was created.
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS requested_layout VARCHAR(100);
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS facility_requirements TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS setup_requirements TEXT;
 
 -- ---------------------------------------------------------------------
 -- EVENTS
