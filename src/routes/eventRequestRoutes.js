@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { body } = require('express-validator');
-const { EventRequest, User } = require('../models');
+const { sequelize, EventRequest, Role, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -26,6 +26,8 @@ const DRAFT_FIELDS = [
   'venueRequirements',
   'accessibilityRequirements',
   'equipmentRequirements',
+  'layout',
+  'registrationSetup',
   'registrationRequired',
 ];
 
@@ -50,6 +52,8 @@ const draftValidators = [
   body('venueRequirements').optional({ nullable: true }).isString(),
   body('accessibilityRequirements').optional({ nullable: true }).isString(),
   body('equipmentRequirements').optional({ nullable: true }).isString(),
+  body('layout').optional({ nullable: true }).isString(),
+  body('registrationSetup').optional({ nullable: true }).isString(),
   body('registrationRequired').optional({ nullable: true }).isBoolean(),
 ];
 
@@ -58,6 +62,53 @@ const organiserInclude = {
   as: 'organiser',
   attributes: ['id', 'email', 'firstName', 'lastName', 'organisationId'],
 };
+
+const assignedCoordinatorInclude = {
+  model: User,
+  as: 'assignedCoordinator',
+  attributes: ['id', 'email', 'firstName', 'lastName'],
+};
+
+const detailedIncludes = [organiserInclude, assignedCoordinatorInclude];
+
+async function findLeastAssignedCoordinator(transaction) {
+  const coordinators = await User.findAll({
+    attributes: ['id', 'email', 'firstName', 'lastName'],
+    where: { isActive: true },
+    include: [
+      {
+        model: Role,
+        attributes: [],
+        where: { name: ROLE_NAMES.EVENT_COORDINATOR },
+        required: true,
+      },
+    ],
+    order: [
+      ['email', 'ASC'],
+      ['id', 'ASC'],
+    ],
+    transaction,
+  });
+
+  if (coordinators.length === 0) return null;
+
+  const coordinatorsWithCounts = await Promise.all(
+    coordinators.map(async (coordinator) => ({
+      coordinator,
+      assignedCount: await EventRequest.count({
+        where: {
+          assignedCoordinatorId: coordinator.id,
+          status: { [Op.in]: ['submitted', 'under_review'] },
+        },
+        transaction,
+      }),
+    }))
+  );
+
+  return coordinatorsWithCounts.reduce((leastAssigned, current) =>
+    current.assignedCount < leastAssigned.assignedCount ? current : leastAssigned
+  ).coordinator;
+}
 
 // Only Event Organisers can create requests (Attendees, staff cannot).
 // Saving here always produces a 'draft' — there is no way for the
@@ -120,7 +171,7 @@ router.get(
     try {
       const requests = await EventRequest.findAll({
         where: { status: { [Op.in]: ['submitted', 'under_review'] } },
-        include: [organiserInclude],
+        include: detailedIncludes,
         order: [['updated_at', 'DESC']],
       });
       res.json({ eventRequests: requests });
@@ -146,7 +197,7 @@ router.get(
   ),
   async (req, res, next) => {
     try {
-      const request = await EventRequest.findByPk(req.params.id, { include: [organiserInclude] });
+      const request = await EventRequest.findByPk(req.params.id, { include: detailedIncludes });
       if (!request) return res.status(404).json({ error: 'Event request not found.' });
       res.json({ eventRequest: request });
     } catch (err) {
@@ -232,13 +283,28 @@ router.patch(
 );
 
 // Fields that must all be present before a request can be submitted.
-// Venue/equipment requirements are explicitly optional per the AC
-// ("can specify" — not "must specify"), so they're excluded here.
-const REQUIRED_TO_SUBMIT = ['eventName', 'preferredStart', 'preferredEnd', 'expectedAttendance'];
+// Drafts may remain incomplete; this endpoint is the deliberate gate
+// into the pending-review queue.
+const REQUIRED_TO_SUBMIT = [
+  'eventName',
+  'description',
+  'purpose',
+  'preferredStart',
+  'preferredEnd',
+  'expectedAttendance',
+  'venueRequirements',
+  'accessibilityRequirements',
+  'equipmentRequirements',
+  'layout',
+  'registrationSetup',
+];
 
 function missingRequiredFields(eventRequest) {
   return REQUIRED_TO_SUBMIT.filter(
-    (field) => eventRequest[field] === null || eventRequest[field] === undefined
+    (field) =>
+      eventRequest[field] === null ||
+      eventRequest[field] === undefined ||
+      (typeof eventRequest[field] === 'string' && eventRequest[field].trim() === '')
   );
 }
 
@@ -274,7 +340,27 @@ router.post(
         });
       }
 
-      await eventRequest.update({ status: 'submitted', submittedAt: new Date() });
+      const assignedCoordinator = await sequelize.transaction(async (transaction) => {
+        const coordinator = await findLeastAssignedCoordinator(transaction);
+        if (!coordinator) return null;
+
+        await eventRequest.update(
+          {
+            status: 'submitted',
+            submittedAt: new Date(),
+            assignedCoordinatorId: coordinator.id,
+          },
+          { transaction }
+        );
+
+        return coordinator;
+      });
+
+      if (!assignedCoordinator) {
+        return res.status(409).json({ error: 'No active Event Coordinator is available.' });
+      }
+
+      await eventRequest.reload({ include: detailedIncludes });
       res.json({ eventRequest });
     } catch (err) {
       next(err);

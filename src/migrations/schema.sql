@@ -161,11 +161,14 @@ CREATE TABLE IF NOT EXISTS event_requests (
     venue_requirements          TEXT,
     accessibility_requirements  TEXT,
     equipment_requirements      TEXT,
+    layout                      TEXT,
+    registration_setup          TEXT,
     registration_required       BOOLEAN NOT NULL DEFAULT false,
     status                      VARCHAR(20) NOT NULL DEFAULT 'draft'
                                     CHECK (status IN
                                         ('draft','submitted','under_review','approved','rejected','returned')),
     submitted_at                TIMESTAMPTZ,
+    assigned_coordinator_id     UUID REFERENCES users(id),
     review_reason               TEXT,
     reviewed_at                 TIMESTAMPTZ,
     reviewed_by                 UUID REFERENCES users(id),
@@ -175,6 +178,14 @@ CREATE TABLE IF NOT EXISTS event_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);
+
+-- Added alongside "Submit Event Request with Mandatory Fields". These are
+-- idempotent so existing dev/test databases can be brought forward without a
+-- full reset.
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS layout TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS registration_setup TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS assigned_coordinator_id UUID REFERENCES users(id);
+CREATE INDEX IF NOT EXISTS idx_event_requests_assigned_coordinator_id ON event_requests(assigned_coordinator_id);
 
 -- ---------------------------------------------------------------------
 -- EVENTS

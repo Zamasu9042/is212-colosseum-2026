@@ -28,6 +28,10 @@ RefreshToken.belongsTo(User, { foreignKey: 'userId' });
 User.hasMany(EventRequest, { foreignKey: 'organiserId', as: 'submittedRequests' });
 EventRequest.belongsTo(User, { foreignKey: 'organiserId', as: 'organiser' });
 
+// User (assigned coordinator) <-> EventRequest
+User.hasMany(EventRequest, { foreignKey: 'assignedCoordinatorId', as: 'assignedEventRequests' });
+EventRequest.belongsTo(User, { foreignKey: 'assignedCoordinatorId', as: 'assignedCoordinator' });
+
 // ClientOrganisation <-> EventRequest
 ClientOrganisation.hasMany(EventRequest, { foreignKey: 'organisationId' });
 EventRequest.belongsTo(ClientOrganisation, { foreignKey: 'organisationId' });

@@ -25,6 +25,8 @@ EventRequest.init(
     venueRequirements: { type: DataTypes.TEXT, field: 'venue_requirements' },
     accessibilityRequirements: { type: DataTypes.TEXT, field: 'accessibility_requirements' },
     equipmentRequirements: { type: DataTypes.TEXT, field: 'equipment_requirements' },
+    layout: { type: DataTypes.TEXT },
+    registrationSetup: { type: DataTypes.TEXT, field: 'registration_setup' },
     registrationRequired: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
@@ -35,6 +37,7 @@ EventRequest.init(
       defaultValue: 'draft',
     },
     submittedAt: { type: DataTypes.DATE, field: 'submitted_at' },
+    assignedCoordinatorId: { type: DataTypes.UUID, field: 'assigned_coordinator_id' },
     reviewReason: { type: DataTypes.TEXT, field: 'review_reason' },
     reviewedAt: { type: DataTypes.DATE, field: 'reviewed_at' },
     reviewedBy: { type: DataTypes.UUID, field: 'reviewed_by' },
