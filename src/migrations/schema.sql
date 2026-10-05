@@ -161,7 +161,10 @@ CREATE TABLE IF NOT EXISTS event_requests (
     preferred_end                TIMESTAMPTZ,
     expected_attendance         INTEGER CHECK (expected_attendance > 0),
     venue_requirements          TEXT,
+    requested_layout            VARCHAR(100), -- theatre, classroom, banquet, etc.
     accessibility_requirements  TEXT,
+    facility_requirements       TEXT,
+    setup_requirements          TEXT,
     equipment_requirements      TEXT,
     registration_required       BOOLEAN NOT NULL DEFAULT false,
     status                      VARCHAR(20) NOT NULL DEFAULT 'draft'
@@ -177,6 +180,12 @@ CREATE TABLE IF NOT EXISTS event_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);
+
+-- Keep existing development databases compatible when this feature is added
+-- after the original event_requests table was created.
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS requested_layout VARCHAR(100);
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS facility_requirements TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS setup_requirements TEXT;
 
 -- ---------------------------------------------------------------------
 -- EVENTS

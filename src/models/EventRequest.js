@@ -23,7 +23,10 @@ EventRequest.init(
     purpose: { type: DataTypes.TEXT },
     category: { type: DataTypes.STRING(50) },
     venueRequirements: { type: DataTypes.TEXT, field: 'venue_requirements' },
+    requestedLayout: { type: DataTypes.STRING(100), field: 'requested_layout' },
     accessibilityRequirements: { type: DataTypes.TEXT, field: 'accessibility_requirements' },
+    facilityRequirements: { type: DataTypes.TEXT, field: 'facility_requirements' },
+    setupRequirements: { type: DataTypes.TEXT, field: 'setup_requirements' },
     equipmentRequirements: { type: DataTypes.TEXT, field: 'equipment_requirements' },
     registrationRequired: {
       type: DataTypes.BOOLEAN,
