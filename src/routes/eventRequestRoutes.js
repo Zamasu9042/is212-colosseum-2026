@@ -411,4 +411,55 @@ router.patch(
   }
 );
 
+// Fields that must all be present before a request can be submitted.
+// Venue/equipment requirements are explicitly optional per the AC
+// ("can specify" — not "must specify"), so they're excluded here.
+const REQUIRED_TO_SUBMIT = ['eventName', 'preferredStart', 'preferredEnd', 'expectedAttendance'];
+
+function missingRequiredFields(eventRequest) {
+  return REQUIRED_TO_SUBMIT.filter(
+    (field) => eventRequest[field] === null || eventRequest[field] === undefined
+  );
+}
+
+// Submit a completed draft for planning. This is the only place status
+// can move from 'draft' to 'submitted' — POST / and PATCH /:id can
+// never do this themselves (the DRAFT_FIELDS whitelist excludes
+// status), so a request can only be submitted deliberately, through
+// this endpoint, by the organiser who owns it, and only once every
+// required field is actually filled in.
+router.post(
+  '/:id/submit',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_ORGANISER),
+  async (req, res, next) => {
+    try {
+      const eventRequest = await EventRequest.findByPk(req.params.id);
+      if (!eventRequest) return res.status(404).json({ error: 'Event request not found.' });
+
+      if (eventRequest.organiserId !== req.user.id) {
+        return res.status(403).json({ error: 'Forbidden. You do not have access to this resource.' });
+      }
+      if (eventRequest.status !== 'draft') {
+        return res
+          .status(409)
+          .json({ error: 'Only requests still in draft status can be submitted.' });
+      }
+
+      const missing = missingRequiredFields(eventRequest);
+      if (missing.length > 0) {
+        return res.status(400).json({
+          error: 'Cannot submit: required information is missing.',
+          missingFields: missing,
+        });
+      }
+
+      await eventRequest.update({ status: 'submitted', submittedAt: new Date() });
+      res.json({ eventRequest });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 module.exports = router;
