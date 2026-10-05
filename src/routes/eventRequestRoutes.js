@@ -1,6 +1,6 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
 const { sequelize, EventRequest, Role, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
@@ -24,7 +24,10 @@ const DRAFT_FIELDS = [
   'preferredEnd',
   'expectedAttendance',
   'venueRequirements',
+  'requestedLayout',
   'accessibilityRequirements',
+  'facilityRequirements',
+  'setupRequirements',
   'equipmentRequirements',
   'layout',
   'registrationSetup',
@@ -50,7 +53,10 @@ const draftValidators = [
   body('preferredEnd').optional({ nullable: true }).isISO8601(),
   body('expectedAttendance').optional({ nullable: true }).isInt({ min: 1 }),
   body('venueRequirements').optional({ nullable: true }).isString(),
+  body('requestedLayout').optional({ nullable: true }).isString().isLength({ max: 100 }),
   body('accessibilityRequirements').optional({ nullable: true }).isString(),
+  body('facilityRequirements').optional({ nullable: true }).isString(),
+  body('setupRequirements').optional({ nullable: true }).isString(),
   body('equipmentRequirements').optional({ nullable: true }).isString(),
   body('layout').optional({ nullable: true }).isString(),
   body('registrationSetup').optional({ nullable: true }).isString(),
@@ -108,6 +114,91 @@ async function findLeastAssignedCoordinator(transaction) {
   return coordinatorsWithCounts.reduce((leastAssigned, current) =>
     current.assignedCount < leastAssigned.assignedCount ? current : leastAssigned
   ).coordinator;
+}
+
+// These are the minimum operational details a Venue Staff member needs before
+// accepting a reservation.  A string containing only whitespace is not a
+// usable requirement, and attendance must be a positive number.
+const MANDATORY_BOOKING_DETAILS = [
+  ['eventName', 'event name'],
+  ['preferredStart', 'start date and time'],
+  ['preferredEnd', 'end date and time'],
+  ['expectedAttendance', 'expected attendance'],
+  ['requestedLayout', 'requested layout'],
+  ['accessibilityRequirements', 'accessibility needs'],
+  ['facilityRequirements', 'facility requirements'],
+  ['setupRequirements', 'setup requirements'],
+];
+
+function isMissingBookingDetail(field, value) {
+  if (field === 'expectedAttendance') return !Number.isInteger(value) || value < 1;
+  return value === null || value === undefined || (typeof value === 'string' && !value.trim());
+}
+
+function getMissingBookingDetails(eventRequest) {
+  return MANDATORY_BOOKING_DETAILS.filter(([field]) => isMissingBookingDetail(field, eventRequest[field]))
+    .map(([, label]) => label);
+}
+
+function serializeBookingForReview(eventRequest) {
+  const booking = eventRequest.toJSON ? eventRequest.toJSON() : eventRequest;
+  const missingDetails = getMissingBookingDetails(booking);
+
+  return {
+    ...booking,
+    bookingDetails: {
+      startDateTime: booking.preferredStart,
+      endDateTime: booking.preferredEnd,
+      expectedAttendance: booking.expectedAttendance,
+      requestedLayout: booking.requestedLayout,
+      accessibilityNeeds: booking.accessibilityRequirements,
+      facilityRequirements: booking.facilityRequirements,
+      setupRequirements: booking.setupRequirements,
+    },
+    missingDetails,
+    isReadyForApproval: missingDetails.length === 0,
+  };
+}
+
+// Booking requests are EventRequest records in this application.  Keep the
+// search definition in one place so the pending queue and decision history
+// behave identically for Venue Staff.
+const bookingSearchValidators = [
+  query('search').optional().isString().trim().isLength({ max: 200 }),
+];
+
+function bookingSearchWhere(search) {
+  if (!search) return undefined;
+
+  return {
+    [Op.or]: [
+      { eventName: { [Op.iLike]: `%${search}%` } },
+      { description: { [Op.iLike]: `%${search}%` } },
+      { purpose: { [Op.iLike]: `%${search}%` } },
+      { category: { [Op.iLike]: `%${search}%` } },
+      { venueRequirements: { [Op.iLike]: `%${search}%` } },
+      // `$alias.column$` is emitted literally by Sequelize, so these use
+      // the persisted snake_case column names rather than model attributes.
+      { '$organiser.first_name$': { [Op.iLike]: `%${search}%` } },
+      { '$organiser.last_name$': { [Op.iLike]: `%${search}%` } },
+      { '$organiser.email$': { [Op.iLike]: `%${search}%` } },
+    ],
+  };
+}
+
+async function findBookingRequests(statuses, search) {
+  const searchCondition = bookingSearchWhere(search);
+  const conditions = [{ status: { [Op.in]: statuses } }];
+  if (searchCondition) conditions.push(searchCondition);
+
+  return EventRequest.findAll({
+    where: { [Op.and]: conditions },
+    include: [organiserInclude],
+    // A left join keeps requests accessible even if an organiser account has
+    // since been removed, while still allowing organiser-name searching.
+    subQuery: false,
+    order: [['updated_at', 'DESC']],
+  });
 }
 
 // Only Event Organisers can create requests (Attendees, staff cannot).
@@ -181,6 +272,74 @@ router.get(
   }
 );
 
+// Venue Staff's operational booking queue.  A pending decision is represented
+// by submitted/under_review; drafts are intentionally excluded because they
+// have not been submitted for a reservation decision yet.
+//
+// `search` matches the event and request details as well as the requester's
+// name/email.  It is deliberately server-side so the result remains correct
+// when the queue spans more than one client page.
+router.get(
+  '/booking-requests/pending',
+  authenticate,
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  bookingSearchValidators,
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const requests = await findBookingRequests(['submitted', 'under_review'], req.query.search);
+      res.json({
+        eventRequests: requests.map(serializeBookingForReview),
+        count: requests.length,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Historical decisions for Venue Staff.  "Accepted" maps to the existing
+// domain status `approved`; retaining that status avoids a second, conflicting
+// approval lifecycle for the same request.
+router.get(
+  '/booking-requests/history',
+  authenticate,
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  bookingSearchValidators,
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const requests = await findBookingRequests(['approved', 'rejected'], req.query.search);
+      res.json({
+        eventRequests: requests.map(serializeBookingForReview),
+        count: requests.length,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Full decision view for a single booking request. Unlike the generic event
+// request endpoint, this makes the operational fields and completeness state
+// explicit for the Venue Staff review experience.
+router.get(
+  '/booking-requests/:id',
+  authenticate,
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  async (req, res, next) => {
+    try {
+      const booking = await EventRequest.findByPk(req.params.id, { include: [organiserInclude] });
+      if (!booking || !['submitted', 'under_review', 'approved', 'rejected'].includes(booking.status)) {
+        return res.status(404).json({ error: 'Booking request not found.' });
+      }
+      res.json({ eventRequest: serializeBookingForReview(booking) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // Event Coordinators can view any request (to review/assign).
 // An Event Organiser may only view their OWN request — this enforces
 // the briefing's requirement that an Organiser should not see events
@@ -193,13 +352,17 @@ router.get(
       const request = await EventRequest.findByPk(req.params.id);
       return !!request && request.organiserId === req.user.id;
     },
-    ROLE_NAMES.EVENT_COORDINATOR
+    ROLE_NAMES.EVENT_COORDINATOR,
+    ROLE_NAMES.VENUE_STAFF
   ),
   async (req, res, next) => {
     try {
       const request = await EventRequest.findByPk(req.params.id, { include: detailedIncludes });
       if (!request) return res.status(404).json({ error: 'Event request not found.' });
-      res.json({ eventRequest: request });
+      res.json({
+        eventRequest:
+          req.user.role === ROLE_NAMES.VENUE_STAFF ? serializeBookingForReview(request) : request,
+      });
     } catch (err) {
       next(err);
     }
@@ -241,17 +404,22 @@ router.patch(
   }
 );
 
-// Only Event Coordinators can approve/reject/return a submitted request.
+// Event Coordinators can approve/reject/return a submitted request; Venue
+// Staff have the narrower booking decision of approve/reject. reviewedBy
+// always records the staff member who made the decision.
 router.patch(
   '/:id/status',
   authenticate,
-  authorize(ROLE_NAMES.EVENT_COORDINATOR),
+  authorize(ROLE_NAMES.EVENT_COORDINATOR, ROLE_NAMES.VENUE_STAFF),
   async (req, res, next) => {
     try {
       const { status } = req.body;
       const reviewReason =
         typeof req.body.reviewReason === 'string' ? req.body.reviewReason.trim() : null;
-      const validStatuses = ['approved', 'rejected', 'returned'];
+      const validStatuses =
+        req.user.role === ROLE_NAMES.VENUE_STAFF
+          ? ['approved', 'rejected']
+          : ['approved', 'rejected', 'returned'];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
       }
@@ -267,6 +435,18 @@ router.patch(
         return res
           .status(409)
           .json({ error: 'Only submitted or under review requests can be reviewed.' });
+      }
+
+      // Venue Staff may reject an incomplete request with an explanation, but
+      // cannot accept it until every operational booking detail is present.
+      if (req.user.role === ROLE_NAMES.VENUE_STAFF && status === 'approved') {
+        const missingDetails = getMissingBookingDetails(request);
+        if (missingDetails.length) {
+          return res.status(422).json({
+            error: 'Booking request is incomplete and cannot be approved.',
+            missingDetails,
+          });
+        }
       }
 
       await request.update({

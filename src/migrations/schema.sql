@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone               VARCHAR(30),
     role_id             SMALLINT NOT NULL REFERENCES roles(id),
     organisation_id     UUID REFERENCES client_organisations(id), -- Event Organisers only
+    organisation        VARCHAR(200), -- attendee-provided organisation name
     department          VARCHAR(100), -- internal staff only
     communication_prefs JSONB NOT NULL DEFAULT '{}'::jsonb,
     is_active           BOOLEAN NOT NULL DEFAULT true,
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS venues (
 -- keeps this idempotent for databases that already ran an earlier version
 -- of this script (matches the CREATE TABLE IF NOT EXISTS pattern above).
 ALTER TABLE venues ADD COLUMN IF NOT EXISTS venue_type VARCHAR(50);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS organisation VARCHAR(200);
 
 CREATE INDEX IF NOT EXISTS idx_venues_venue_type ON venues(venue_type);
 CREATE INDEX IF NOT EXISTS idx_venues_capacity ON venues(capacity);
@@ -159,7 +161,10 @@ CREATE TABLE IF NOT EXISTS event_requests (
     preferred_end                TIMESTAMPTZ,
     expected_attendance         INTEGER CHECK (expected_attendance > 0),
     venue_requirements          TEXT,
+    requested_layout            VARCHAR(100), -- theatre, classroom, banquet, etc.
     accessibility_requirements  TEXT,
+    facility_requirements       TEXT,
+    setup_requirements          TEXT,
     equipment_requirements      TEXT,
     layout                      TEXT,
     registration_setup          TEXT,
@@ -186,6 +191,11 @@ ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS layout TEXT;
 ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS registration_setup TEXT;
 ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS assigned_coordinator_id UUID REFERENCES users(id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_assigned_coordinator_id ON event_requests(assigned_coordinator_id);
+-- Keep existing development databases compatible when this feature is added
+-- after the original event_requests table was created.
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS requested_layout VARCHAR(100);
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS facility_requirements TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS setup_requirements TEXT;
 
 -- ---------------------------------------------------------------------
 -- EVENTS
@@ -257,6 +267,55 @@ CREATE INDEX IF NOT EXISTS idx_agenda_items_programme_id ON agenda_items(program
 CREATE INDEX IF NOT EXISTS idx_agenda_items_start_time ON agenda_items(start_time);
 
 -- ---------------------------------------------------------------------
+-- VENUE UNAVAILABILITY PERIODS
+-- Time-bound blocks recorded by Venue Staff (maintenance, renovation,
+-- safety issues, internal activities...). Unlike venues.status, which
+-- marks a venue out of service indefinitely, these cover a specific
+-- window and are considered by venue schedule conflict detection.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_unavailability (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    venue_id        UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+    start_datetime  TIMESTAMPTZ NOT NULL,
+    end_datetime    TIMESTAMPTZ NOT NULL,
+    reason          VARCHAR(500) NOT NULL,
+    created_by      UUID REFERENCES users(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_unavailability_venue_window
+    ON venue_unavailability(venue_id, start_datetime, end_datetime);
+
+-- ---------------------------------------------------------------------
+-- VENUE HOLDS (tentative holds)
+-- A temporary claim on a venue while an event is still being finalised.
+-- A hold only blocks the venue while it is ACTIVE: status = 'active'
+-- AND (expires_at IS NULL OR expires_at > now()). An expired hold
+-- keeps status 'active' in the table but is ignored by conflict
+-- detection, so no background job is needed to expire holds.
+-- event_id is optional: a coordinator may hold a slot before the
+-- Event row exists.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_holds (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    venue_id        UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+    event_id        UUID REFERENCES events(id) ON DELETE SET NULL,
+    held_by         UUID REFERENCES users(id),
+    start_datetime  TIMESTAMPTZ NOT NULL,
+    end_datetime    TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ,
+    status          VARCHAR(20) NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','released','converted')),
+    notes           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_holds_venue_status ON venue_holds(venue_id, status);
+CREATE INDEX IF NOT EXISTS idx_venue_holds_event_id ON venue_holds(event_id);
+
+-- ---------------------------------------------------------------------
 -- Trigger to auto-maintain updated_at columns
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -271,7 +330,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;

@@ -118,6 +118,106 @@ have all), `availability` (`available`|`unavailable`), `startDateTime` +
 When nothing matches, the response includes a `message` field alongside
 an empty `venues` array.
 
+### 6b. Venue schedule conflict identification
+
+Checks a proposed booking against one or more venues. Each venue is evaluated
+**independently** and gets its own result. Venue Staff and Event Coordinators only.
+
+```bash
+curl -X POST http://localhost:4000/api/venues/conflicts \
+  -H "Authorization: Bearer <accessToken>" -H "Content-Type: application/json" \
+  -d '{"venueIds":["<venueA>","<venueB>"],
+       "startDateTime":"2026-10-01T15:00:00Z","endDateTime":"2026-10-01T17:00:00Z",
+       "excludeEventId":"<optional: re-check an existing event without self-conflict>"}'
+```
+
+The response holds `hasConflicts` plus, for each venue, its `effectiveWindow` and a
+`conflicts` list. Each conflict has a `type`:
+
+| type | Meaning |
+|---|---|
+| `booking` | An event that isn't cancelled (`planning`, `awaiting_arrangements`, `confirmed`, `completed`) |
+| `tentative_hold` | An **active** hold: `status = active` and `expires_at` is null or in the future |
+| `unavailability` | A recorded unavailability period (includes its `reason`) |
+| `venue_status` | The venue is marked `maintenance` / `blocked` |
+
+**Effective occupied period** = `[start − setupMinutes, end + teardownMinutes)` of the
+venue. This applies to the proposed booking **and** to existing bookings/holds. With
+30/30 buffers, two events need a 60-minute gap between them. Unavailability periods are
+not buffered, but the new booking's own setup/teardown cannot overlap them. Windows that
+only touch do not conflict.
+
+Supporting endpoints:
+
+| Method & path | Who | Notes |
+|---|---|---|
+| `GET /api/venues/:id/holds` | Staff, Coordinator | Includes computed `isActive` |
+| `POST /api/venues/:id/holds` | Staff, Coordinator | `startDateTime`, `endDateTime`, optional `expiresAt`, `eventId`, `notes`. **409** with conflict details if it would double-book. Concurrent requests are serialised by a row lock on the venue |
+| `PATCH /api/venues/:id/holds/:holdId/release` | Staff, or the Coordinator who placed it | |
+| `GET /api/venues/:id/unavailability` | Staff, Coordinator | |
+| `POST /api/venues/:id/unavailability` | Staff | `startDateTime`, `endDateTime`, `reason`. Always recorded; response lists `affected` bookings/holds |
+| `DELETE /api/venues/:id/unavailability/:periodId` | Staff | |
+
+Venue search (`GET /api/venues`, `GET /api/venues/:id`) uses the same rules, so
+`isAvailable` also reflects holds and unavailability periods.
+
+For future booking-request/approval routes, call
+`assertNoVenueConflicts()` from `src/services/venueConflictService.js` inside a
+transaction after `lockVenues()`. It throws a 409 `VenueConflictError`.
+
+**Test traceability**
+
+| AC | Unit (`tests/venueConflicts.test.js`) | Integration (`tests/venue.conflicts.test.js`) |
+|---|---|---|
+| Setup/turnaround | `AC — Setup/turnaround` | `AC — Setup/turnaround` |
+| Tentative holds | `AC — Tentative holds` | `AC — Tentative holds` (incl. concurrency) |
+| Venue unavailability | `AC — Venue unavailability` | `AC — Venue unavailability` |
+| Multiple venues | `AC — Multiple venues` | `AC — Multiple venues` |
+
+> Existing databases: run `npm run db:init` again. It is idempotent and adds the new
+> `venue_holds` and `venue_unavailability` tables.
+
+### 6c. Venue Staff booking decisions
+
+Venue Staff can work the pending reservation queue and search it by event
+details or organiser name/email:
+
+```bash
+# Submitted/under-review requests awaiting a decision
+curl -G http://localhost:4000/api/event-requests/booking-requests/pending \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  --data-urlencode "search=leadership"
+
+# Accepted (`approved`) and rejected decision history
+curl -G http://localhost:4000/api/event-requests/booking-requests/history \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  --data-urlencode "search=leadership"
+
+# Approve, or use status=rejected with a non-empty reviewReason to reject
+curl -X PATCH http://localhost:4000/api/event-requests/<requestId>/status \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"approved"}'
+```
+
+The API's existing `approved` status represents an accepted booking. Both
+queue endpoints are restricted to the `venue_staff` role and return organiser
+details needed to make the decision.
+
+For a decision-ready view of one request, Venue Staff can call:
+
+```bash
+curl http://localhost:4000/api/event-requests/booking-requests/<requestId> \
+  -H "Authorization: Bearer <venueStaffAccessToken>"
+```
+
+The response contains `bookingDetails` (date/time, attendance, requested
+layout, accessibility, facilities, and setup requirements), `missingDetails`,
+and `isReadyForApproval`. Venue Staff cannot approve a request until it has an
+event name, start/end date and time, positive attendance, requested layout,
+accessibility needs, facility requirements, and setup requirements. An
+incomplete request may still be rejected with a reason.
+
 ### 7. Run the tests
 
 ```bash

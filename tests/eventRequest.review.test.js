@@ -54,7 +54,10 @@ async function createSubmittedRequest(organiser, overrides = {}) {
     preferredEnd: new Date('2026-11-01T05:00:00.000Z'),
     expectedAttendance: 120,
     venueRequirements: 'Auditorium seating',
+    requestedLayout: 'Theatre',
     accessibilityRequirements: 'Wheelchair access',
+    facilityRequirements: 'Wi-Fi and accessible restrooms',
+    setupRequirements: 'Set up theatre seating and lectern 30 minutes before the event.',
     equipmentRequirements: 'Projector and two microphones',
     layout: 'Theatre seating with aisle access',
     registrationSetup: 'Online registration with check-in desk',
@@ -70,10 +73,12 @@ describe('Event Review and Approval', () => {
   let organiserA;
   let organiserB;
   let coordinator;
+  let venueStaff;
   let attendee;
   let organiserAToken;
   let organiserBToken;
   let coordinatorToken;
+  let venueStaffToken;
   let attendeeToken;
 
   beforeAll(async () => {
@@ -95,6 +100,12 @@ describe('Event Review and Approval', () => {
       firstName: 'Casey',
       lastName: 'Ng',
     });
+    venueStaff = await createUser({
+      email: `review-venue-staff-${suffix}@example.com`,
+      roleName: ROLE_NAMES.VENUE_STAFF,
+      firstName: 'Jordan',
+      lastName: 'Koh',
+    });
     attendee = await createUser({
       email: `review-attendee-${suffix}@example.com`,
       roleName: ROLE_NAMES.ATTENDEE,
@@ -105,6 +116,7 @@ describe('Event Review and Approval', () => {
     organiserAToken = await login(organiserA.email);
     organiserBToken = await login(organiserB.email);
     coordinatorToken = await login(coordinator.email);
+    venueStaffToken = await login(venueStaff.email);
     attendeeToken = await login(attendee.email);
   });
 
@@ -146,6 +158,146 @@ describe('Event Review and Approval', () => {
     expect(queued.organiser.passwordHash).toBeUndefined();
   });
 
+  test('venue staff can search pending booking requests and view final decision history', async () => {
+    const pending = await createSubmittedRequest(organiserA, {
+      eventName: 'Harbour ballroom booking',
+    });
+    const nonMatchingPending = await createSubmittedRequest(organiserB, {
+      eventName: 'Campus workshop booking',
+    });
+    const approved = await createSubmittedRequest(organiserA, {
+      eventName: 'Harbour booking approved',
+      status: 'approved',
+      reviewedAt: new Date(),
+      reviewedBy: coordinator.id,
+    });
+    const rejected = await createSubmittedRequest(organiserA, {
+      eventName: 'Harbour booking rejected',
+      status: 'rejected',
+      reviewReason: 'Venue is unavailable.',
+      reviewedAt: new Date(),
+      reviewedBy: coordinator.id,
+    });
+
+    const pendingRes = await request(app)
+      .get('/api/event-requests/booking-requests/pending?search=harbour')
+      .set('Authorization', `Bearer ${venueStaffToken}`);
+
+    expect(pendingRes.status).toBe(200);
+    expect(pendingRes.body.eventRequests.map((item) => item.id)).toContain(pending.id);
+    expect(pendingRes.body.eventRequests.map((item) => item.id)).not.toContain(nonMatchingPending.id);
+    expect(pendingRes.body.eventRequests.every((item) => ['submitted', 'under_review'].includes(item.status))).toBe(true);
+
+    const historyRes = await request(app)
+      .get('/api/event-requests/booking-requests/history?search=harbour')
+      .set('Authorization', `Bearer ${venueStaffToken}`);
+
+    expect(historyRes.status).toBe(200);
+    expect(historyRes.body.eventRequests.map((item) => item.id)).toEqual(
+      expect.arrayContaining([approved.id, rejected.id])
+    );
+    expect(historyRes.body.eventRequests.every((item) => ['approved', 'rejected'].includes(item.status))).toBe(true);
+  });
+
+  test('venue staff can approve or reject a pending booking request', async () => {
+    const approvalCandidate = await createSubmittedRequest(organiserA, {
+      eventName: 'Venue staff approval candidate',
+    });
+    const rejectionCandidate = await createSubmittedRequest(organiserA, {
+      eventName: 'Venue staff rejection candidate',
+    });
+
+    const approvalRes = await request(app)
+      .patch(`/api/event-requests/${approvalCandidate.id}/status`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ status: 'approved' });
+    expect(approvalRes.status).toBe(200);
+    expect(approvalRes.body.eventRequest.reviewedBy).toBe(venueStaff.id);
+
+    const rejectionRes = await request(app)
+      .patch(`/api/event-requests/${rejectionCandidate.id}/status`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ status: 'rejected', reviewReason: 'Requested room is under maintenance.' });
+    expect(rejectionRes.status).toBe(200);
+    expect(rejectionRes.body.eventRequest.reviewedBy).toBe(venueStaff.id);
+
+    const returnedRes = await request(app)
+      .patch(`/api/event-requests/${rejectionCandidate.id}/status`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ status: 'returned', reviewReason: 'Please clarify.' });
+    expect(returnedRes.status).toBe(400);
+  });
+
+  test('venue staff see decision details and missing-detail flags for a booking request', async () => {
+    const complete = await createSubmittedRequest(organiserA, {
+      eventName: 'Complete booking detail view',
+    });
+    const incomplete = await createSubmittedRequest(organiserA, {
+      eventName: 'Incomplete booking detail view',
+      requestedLayout: '   ',
+      accessibilityRequirements: null,
+      facilityRequirements: null,
+      setupRequirements: null,
+    });
+
+    const detailRes = await request(app)
+      .get(`/api/event-requests/booking-requests/${complete.id}`)
+      .set('Authorization', `Bearer ${venueStaffToken}`);
+
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.eventRequest.bookingDetails).toMatchObject({
+      expectedAttendance: 120,
+      requestedLayout: 'Theatre',
+      accessibilityNeeds: 'Wheelchair access',
+      facilityRequirements: 'Wi-Fi and accessible restrooms',
+      setupRequirements: 'Set up theatre seating and lectern 30 minutes before the event.',
+    });
+    expect(detailRes.body.eventRequest.bookingDetails.startDateTime).toBeTruthy();
+    expect(detailRes.body.eventRequest.bookingDetails.endDateTime).toBeTruthy();
+    expect(detailRes.body.eventRequest.isReadyForApproval).toBe(true);
+    expect(detailRes.body.eventRequest.missingDetails).toEqual([]);
+
+    const pendingRes = await request(app)
+      .get('/api/event-requests/booking-requests/pending?search=Incomplete%20booking%20detail')
+      .set('Authorization', `Bearer ${venueStaffToken}`);
+    const queuedIncomplete = pendingRes.body.eventRequests.find((item) => item.id === incomplete.id);
+    expect(queuedIncomplete.isReadyForApproval).toBe(false);
+    expect(queuedIncomplete.missingDetails).toEqual(
+      expect.arrayContaining(['requested layout', 'accessibility needs', 'facility requirements', 'setup requirements'])
+    );
+  });
+
+  test('venue staff cannot approve a booking request with mandatory details missing', async () => {
+    const incomplete = await createSubmittedRequest(organiserA, {
+      eventName: null,
+      preferredStart: null,
+      expectedAttendance: null,
+      requestedLayout: null,
+      accessibilityRequirements: null,
+      facilityRequirements: null,
+      setupRequirements: null,
+    });
+
+    const res = await request(app)
+      .patch(`/api/event-requests/${incomplete.id}/status`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ status: 'approved' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/incomplete/i);
+    expect(res.body.missingDetails).toEqual(
+      expect.arrayContaining([
+        'event name',
+        'start date and time',
+        'expected attendance',
+        'requested layout',
+        'accessibility needs',
+        'facility requirements',
+        'setup requirements',
+      ])
+    );
+  });
+
   test('coordinator can fetch a submitted request and see its review details', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Detailed coordinator review',
@@ -163,7 +315,10 @@ describe('Event Review and Approval', () => {
       purpose: 'Community engagement',
       expectedAttendance: 120,
       venueRequirements: 'Auditorium seating',
+      requestedLayout: 'Theatre',
       accessibilityRequirements: 'Wheelchair access',
+      facilityRequirements: 'Wi-Fi and accessible restrooms',
+      setupRequirements: 'Set up theatre seating and lectern 30 minutes before the event.',
       equipmentRequirements: 'Projector and two microphones',
       registrationRequired: true,
       status: 'submitted',

@@ -9,6 +9,8 @@ const EventRequest = require('./EventRequest');
 const Event = require('./Event');
 const EventProgramme = require('./EventProgramme');
 const AgendaItem = require('./AgendaItem');
+const VenueHold = require('./VenueHold');
+const VenueUnavailability = require('./VenueUnavailability');
 
 // --- Associations ---
 
@@ -60,6 +62,16 @@ EventProgramme.hasMany(AgendaItem, {
 });
 AgendaItem.belongsTo(EventProgramme, { foreignKey: 'programmeId' });
 
+// Venue <-> VenueUnavailability (time-bound blocks)
+Venue.hasMany(VenueUnavailability, { foreignKey: 'venueId', as: 'unavailabilityPeriods' });
+VenueUnavailability.belongsTo(Venue, { foreignKey: 'venueId' });
+
+// Venue <-> VenueHold (tentative holds), optionally tied to an Event
+Venue.hasMany(VenueHold, { foreignKey: 'venueId', as: 'holds' });
+VenueHold.belongsTo(Venue, { foreignKey: 'venueId' });
+Event.hasMany(VenueHold, { foreignKey: 'eventId', as: 'venueHolds' });
+VenueHold.belongsTo(Event, { foreignKey: 'eventId' });
+
 module.exports = {
   sequelize,
   Role,
@@ -73,4 +85,6 @@ module.exports = {
   Event,
   EventProgramme,
   AgendaItem,
+  VenueHold,
+  VenueUnavailability,
 };
