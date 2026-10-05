@@ -59,6 +59,8 @@ async function createSubmittedRequest(organiser, overrides = {}) {
     facilityRequirements: 'Wi-Fi and accessible restrooms',
     setupRequirements: 'Set up theatre seating and lectern 30 minutes before the event.',
     equipmentRequirements: 'Projector and two microphones',
+    layout: 'Theatre seating with aisle access',
+    registrationSetup: 'Online registration with check-in desk',
     registrationRequired: true,
     status: 'submitted',
     submittedAt: new Date(),
