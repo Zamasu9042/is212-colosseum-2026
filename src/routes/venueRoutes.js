@@ -1,11 +1,12 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { query } = require('express-validator');
-const { Venue, Event } = require('../models');
+const { Venue } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
 const { computeAvailability } = require('../utils/venueAvailability');
+const { loadVenueSchedules } = require('../services/venueConflictService');
 
 const router = express.Router();
 
@@ -57,26 +58,41 @@ function parseDateRange(reqQuery) {
   return { queryStart, queryEnd };
 }
 
-/** Groups Event rows by venueId for O(1) lookup while computing availability. */
-function groupEventsByVenue(events) {
-  return events.reduce((acc, event) => {
-    if (!acc[event.venueId]) acc[event.venueId] = [];
-    acc[event.venueId].push(event);
+/** Groups rows (events/holds/unavailability) by venueId for O(1) lookup. */
+function groupByVenue(rows) {
+  return rows.reduce((acc, row) => {
+    if (!acc[row.venueId]) acc[row.venueId] = [];
+    acc[row.venueId].push(row);
     return acc;
   }, {});
 }
 
-function serializeVenue(venue, queryStart, queryEnd, eventsForVenue) {
-  const { isAvailable, conflictingEvents } = computeAvailability(
+/**
+ * Loads everything that can occupy these venues (blocking bookings, active
+ * tentative holds, unavailability periods) and indexes it by venue.
+ */
+async function loadSchedulesByVenue(venueIds) {
+  const { events, holds, unavailability } = await loadVenueSchedules(venueIds);
+  return {
+    events: groupByVenue(events),
+    holds: groupByVenue(holds),
+    unavailability: groupByVenue(unavailability),
+  };
+}
+
+function serializeVenue(venue, queryStart, queryEnd, schedules) {
+  const { isAvailable, conflicts } = computeAvailability(
     venue,
-    eventsForVenue,
+    schedules.events[venue.id],
     queryStart,
-    queryEnd
+    queryEnd,
+    { holds: schedules.holds[venue.id], unavailability: schedules.unavailability[venue.id] }
   );
   return {
     ...venue.toJSON(),
     isAvailable,
-    conflictingEventCount: conflictingEvents.length,
+    conflictingEventCount: conflicts.filter((c) => c.type === 'booking').length,
+    conflictCount: conflicts.length,
   };
 }
 
@@ -99,7 +115,8 @@ function serializeVenue(venue, queryStart, queryEnd, eventsForVenue) {
 //   availability  - "available" | "unavailable"
 //   startDateTime / endDateTime - proposed event window (ISO8601, both-or-neither);
 //                   when given, availability additionally checks for conflicting
-//                   bookings (factoring in each venue's setup/teardown time)
+//                   bookings, active tentative holds and unavailability periods
+//                   (factoring in each venue's setup/teardown time)
 //   sortBy        - "name" | "location" | "capacity" | "availability" (default "name")
 //   sortOrder     - "asc" | "desc" (default "asc")
 // ---------------------------------------------------------------------
@@ -162,17 +179,9 @@ router.get('/', authenticate, venueSearchValidators, validateRequest, async (req
       order: dbOrder,
     });
 
-    let eventsByVenue = {};
-    if (venues.length) {
-      const events = await Event.findAll({
-        where: { venueId: { [Op.in]: venues.map((v) => v.id) } },
-      });
-      eventsByVenue = groupEventsByVenue(events);
-    }
+    const schedules = await loadSchedulesByVenue(venues.map((v) => v.id));
 
-    let results = venues.map((venue) =>
-      serializeVenue(venue, queryStart, queryEnd, eventsByVenue[venue.id])
-    );
+    let results = venues.map((venue) => serializeVenue(venue, queryStart, queryEnd, schedules));
 
     if (availability === 'available') results = results.filter((v) => v.isAvailable);
     if (availability === 'unavailable') results = results.filter((v) => !v.isAvailable);
@@ -209,8 +218,8 @@ router.get('/:id', authenticate, dateRangeValidators, validateRequest, async (re
       return res.status(rangeErr.status).json({ error: rangeErr.message });
     }
 
-    const events = await Event.findAll({ where: { venueId: venue.id } });
-    res.json({ venue: serializeVenue(venue, queryStart, queryEnd, events) });
+    const schedules = await loadSchedulesByVenue([venue.id]);
+    res.json({ venue: serializeVenue(venue, queryStart, queryEnd, schedules) });
   } catch (err) {
     next(err);
   }
