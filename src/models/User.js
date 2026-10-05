@@ -24,6 +24,7 @@ User.init(
     phone: { type: DataTypes.STRING(30) },
     roleId: { type: DataTypes.SMALLINT, allowNull: false, field: 'role_id' },
     organisationId: { type: DataTypes.UUID, field: 'organisation_id' },
+    organization: { type: DataTypes.STRING(200), field: 'organisation' },
     department: { type: DataTypes.STRING(100) },
     communicationPrefs: {
       type: DataTypes.JSONB,

@@ -177,6 +177,47 @@ transaction after `lockVenues()`. It throws a 409 `VenueConflictError`.
 > Existing databases: run `npm run db:init` again. It is idempotent and adds the new
 > `venue_holds` and `venue_unavailability` tables.
 
+### 6c. Venue Staff booking decisions
+
+Venue Staff can work the pending reservation queue and search it by event
+details or organiser name/email:
+
+```bash
+# Submitted/under-review requests awaiting a decision
+curl -G http://localhost:4000/api/event-requests/booking-requests/pending \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  --data-urlencode "search=leadership"
+
+# Accepted (`approved`) and rejected decision history
+curl -G http://localhost:4000/api/event-requests/booking-requests/history \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  --data-urlencode "search=leadership"
+
+# Approve, or use status=rejected with a non-empty reviewReason to reject
+curl -X PATCH http://localhost:4000/api/event-requests/<requestId>/status \
+  -H "Authorization: Bearer <venueStaffAccessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"approved"}'
+```
+
+The API's existing `approved` status represents an accepted booking. Both
+queue endpoints are restricted to the `venue_staff` role and return organiser
+details needed to make the decision.
+
+For a decision-ready view of one request, Venue Staff can call:
+
+```bash
+curl http://localhost:4000/api/event-requests/booking-requests/<requestId> \
+  -H "Authorization: Bearer <venueStaffAccessToken>"
+```
+
+The response contains `bookingDetails` (date/time, attendance, requested
+layout, accessibility, facilities, and setup requirements), `missingDetails`,
+and `isReadyForApproval`. Venue Staff cannot approve a request until it has an
+event name, start/end date and time, positive attendance, requested layout,
+accessibility needs, facility requirements, and setup requirements. An
+incomplete request may still be rejected with a reason.
+
 ### 7. Run the tests
 
 ```bash
