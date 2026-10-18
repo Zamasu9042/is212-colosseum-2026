@@ -279,6 +279,11 @@ CREATE TABLE IF NOT EXISTS venue_unavailability (
     start_datetime  TIMESTAMPTZ NOT NULL,
     end_datetime    TIMESTAMPTZ NOT NULL,
     reason          VARCHAR(500) NOT NULL,
+    -- Category of the reason (Mark Venue Temporarily Unavailable AC2);
+    -- `reason` above holds the free-text detail.
+    reason_category VARCHAR(30) NOT NULL DEFAULT 'other'
+                        CHECK (reason_category IN
+                            ('maintenance','equipment_failure','renovation','safety_concern','other')),
     created_by      UUID REFERENCES users(id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -316,6 +321,52 @@ CREATE INDEX IF NOT EXISTS idx_venue_holds_venue_status ON venue_holds(venue_id,
 CREATE INDEX IF NOT EXISTS idx_venue_holds_event_id ON venue_holds(event_id);
 
 -- ---------------------------------------------------------------------
+-- VENUE BOOKINGS
+-- One row per venue requested for an event. An event may have many
+-- (multi-venue events); every row keeps its own event_id so all of an
+-- event's bookings stay linked, and each is approved/rejected/cancelled
+-- on its own without touching the others.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_bookings (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id              UUID NOT NULL REFERENCES events(id),
+    venue_id              UUID NOT NULL REFERENCES venues(id),
+    requested_by          UUID NOT NULL REFERENCES users(id),
+    start_datetime        TIMESTAMPTZ NOT NULL,
+    end_datetime          TIMESTAMPTZ NOT NULL,
+    expected_attendance   INTEGER NOT NULL CHECK (expected_attendance > 0),
+    requirements          TEXT,
+    status                VARCHAR(30) NOT NULL DEFAULT 'pending'
+                              CHECK (status IN
+                                  ('pending','approved','rejected','cancelled','needs_replacement','replaced')),
+    review_reason         TEXT,
+    reviewed_by           UUID REFERENCES users(id),
+    reviewed_at           TIMESTAMPTZ,
+    replaces_booking_id   UUID REFERENCES venue_bookings(id),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_event_id ON venue_bookings(event_id);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_venue_id ON venue_bookings(venue_id);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_status ON venue_bookings(status);
+
+-- ---------------------------------------------------------------------
+-- NOTIFICATIONS (in-app)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type              VARCHAR(50) NOT NULL,
+    message           TEXT NOT NULL,
+    event_id          UUID REFERENCES events(id),
+    venue_booking_id  UUID REFERENCES venue_bookings(id),
+    read_at           TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+
+-- ---------------------------------------------------------------------
 -- Trigger to auto-maintain updated_at columns
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -330,7 +381,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;

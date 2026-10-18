@@ -5,15 +5,27 @@
 //   POST   /api/venues/:id/holds                          place a tentative hold (409 on conflict)
 //   PATCH  /api/venues/:id/holds/:holdId/release          release a hold
 //   GET    /api/venues/:id/unavailability                 list unavailability periods
-//   POST   /api/venues/:id/unavailability                 record an unavailability period
+//   POST   /api/venues/:id/unavailability                 record an unavailability period; flags
+//                                                         overlapping venue bookings as needs_replacement
+//                                                         and notifies the responsible coordinators
 //   DELETE /api/venues/:id/unavailability/:periodId       remove an unavailability period
 //
 // All conflict rules live in utils/venueConflicts.js; this file only
 // handles HTTP, validation and permissions.
 
 const express = require('express');
+const { Op } = require('sequelize');
 const { body, param } = require('express-validator');
-const { sequelize, Venue, Event, VenueHold, VenueUnavailability } = require('../models');
+const {
+  sequelize,
+  Venue,
+  Event,
+  EventRequest,
+  VenueHold,
+  VenueUnavailability,
+  VenueBooking,
+  Notification,
+} = require('../models');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
 const {
@@ -23,7 +35,13 @@ const {
   checkVenueConflicts,
   assertNoVenueConflicts,
 } = require('../services/venueConflictService');
-const { isHoldActive, findAffectedByUnavailability } = require('../utils/venueConflicts');
+const {
+  isHoldActive,
+  findAffectedByUnavailability,
+  getEffectiveWindow,
+  windowsOverlap,
+} = require('../utils/venueConflicts');
+const { ACTIVE_BOOKING_STATUSES } = require('../services/venueConflictService');
 
 const router = express.Router();
 
@@ -243,8 +261,12 @@ router.get(
 );
 
 // Recording unavailability is never blocked by existing bookings (a burst
-// pipe can't be rescheduled), but the response lists the bookings and
-// active holds it now clashes with so staff can follow up.
+// pipe can't be rescheduled). Instead:
+//   - overlapping venue bookings are flagged `needs_replacement` (the event
+//     is NOT cancelled and no booking/event details are changed),
+//   - the Event Coordinator responsible for each affected event is notified
+//     that alternative arrangements are required,
+//   - the response lists everything affected so staff can follow up.
 router.post(
   '/:id/unavailability',
   authorize(ROLE_NAMES.VENUE_STAFF),
@@ -258,6 +280,11 @@ router.post(
       .trim()
       .isLength({ min: 1, max: 500 })
       .withMessage('reason is required (max 500 characters).'),
+    // Optional for backwards compatibility; defaults to "other".
+    body('reasonCategory')
+      .optional()
+      .isIn(VenueUnavailability.REASON_CATEGORIES)
+      .withMessage(`reasonCategory must be one of: ${VenueUnavailability.REASON_CATEGORIES.join(', ')}.`),
   ],
   validateRequest,
   async (req, res, next) => {
@@ -265,25 +292,115 @@ router.post(
       const venue = await findVenueOr404(req.params.id, res);
       if (!venue) return;
 
-      const { startDateTime, endDateTime, reason } = req.body;
-      const period = await VenueUnavailability.create({
-        venueId: venue.id,
-        startDatetime: startDateTime,
-        endDatetime: endDateTime,
-        reason,
-        createdBy: req.user.id,
-      });
+      const { startDateTime, endDateTime, reason, reasonCategory } = req.body;
 
-      const { events, holds } = await loadVenueSchedules([venue.id]);
-      const affected = findAffectedByUnavailability({
-        venue,
-        start: period.startDatetime,
-        end: period.endDatetime,
-        events,
-        holds,
-      });
+      const { period, affected, affectedBookings, notificationsSent } = await sequelize.transaction(
+        async (transaction) => {
+          const created = await VenueUnavailability.create(
+            {
+              venueId: venue.id,
+              startDatetime: startDateTime,
+              endDatetime: endDateTime,
+              reason,
+              reasonCategory: reasonCategory || 'other',
+              createdBy: req.user.id,
+            },
+            { transaction }
+          );
 
-      res.status(201).json({ unavailability: period, affected });
+          const { events, holds } = await loadVenueSchedules([venue.id], { transaction });
+          // Venue bookings are handled below, so only plain events/holds here.
+          const plainEvents = events.filter((e) => !e.isVenueBooking);
+          const found = findAffectedByUnavailability({
+            venue,
+            start: created.startDatetime,
+            end: created.endDatetime,
+            events: plainEvents,
+            holds,
+          });
+
+          // Live venue bookings whose occupied window (incl. setup/teardown)
+          // runs into the new period.
+          const liveBookings = await VenueBooking.findAll({
+            where: { venueId: venue.id, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } },
+            include: [{ model: Event, include: [{ model: EventRequest, attributes: ['eventName'] }] }],
+            transaction,
+          });
+          const hitBookings = liveBookings.filter((b) => {
+            const occupied = getEffectiveWindow(b.startDatetime, b.endDatetime, venue);
+            return windowsOverlap(occupied.start, occupied.end, created.startDatetime, created.endDatetime);
+          });
+
+          // Flag only the status; venue, times and requirements stay as submitted.
+          for (const booking of hitBookings) {
+            await booking.update({ status: 'needs_replacement' }, { transaction });
+          }
+
+          const label = created.reasonCategory.replace('_', ' ');
+          const periodText = `${created.startDatetime.toISOString()} to ${created.endDatetime.toISOString()}`;
+          const makeMessage = (eventName, start, end) =>
+            `${venue.name} is unavailable (${label}: ${reason}) from ${periodText}. ` +
+            `"${eventName || 'Your event'}" (${new Date(start).toISOString()} - ${new Date(end).toISOString()}) ` +
+            'is affected; please arrange an alternative venue.';
+
+          let sent = 0;
+          for (const booking of hitBookings) {
+            const coordinatorId = booking.Event?.coordinatorId;
+            if (!coordinatorId) continue;
+            await Notification.create(
+              {
+                userId: coordinatorId,
+                type: 'venue_unavailable',
+                message: makeMessage(booking.Event.EventRequest?.eventName, booking.startDatetime, booking.endDatetime),
+                eventId: booking.eventId,
+                venueBookingId: booking.id,
+              },
+              { transaction }
+            );
+            sent += 1;
+          }
+
+          // Events that reference the venue directly (no venue booking row).
+          const eventIds = found.filter((a) => a.type === 'booking').map((a) => a.eventId);
+          const affectedEvents = eventIds.length
+            ? await Event.findAll({
+                where: { id: { [Op.in]: eventIds } },
+                include: [{ model: EventRequest, attributes: ['eventName'] }],
+                transaction,
+              })
+            : [];
+          for (const event of affectedEvents) {
+            if (!event.coordinatorId) continue;
+            await Notification.create(
+              {
+                userId: event.coordinatorId,
+                type: 'venue_unavailable',
+                message: makeMessage(event.EventRequest?.eventName, event.startDatetime, event.endDatetime),
+                eventId: event.id,
+              },
+              { transaction }
+            );
+            sent += 1;
+          }
+
+          return {
+            period: created,
+            affected: found,
+            affectedBookings: hitBookings.map((b) => ({
+              bookingId: b.id,
+              eventId: b.eventId,
+              eventName: b.Event?.EventRequest?.eventName ?? null,
+              coordinatorId: b.Event?.coordinatorId ?? null,
+              startDatetime: b.startDatetime,
+              endDatetime: b.endDatetime,
+              status: b.status,
+            })),
+            notificationsSent: sent,
+          };
+        }
+      );
+
+      res.status(201).json({ unavailability: period, affected, affectedBookings, notificationsSent });
     } catch (err) {
       next(err);
     }

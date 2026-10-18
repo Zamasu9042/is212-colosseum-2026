@@ -118,7 +118,7 @@ function findVenueConflicts({
       conflicts.push({
         type: CONFLICT_TYPES.BOOKING,
         id: event.id,
-        eventId: event.id,
+        eventId: event.eventId ?? event.id,
         status: event.status,
         start: toDate(event.startDatetime),
         end: toDate(event.endDatetime),

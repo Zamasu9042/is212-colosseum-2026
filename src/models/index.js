@@ -11,6 +11,8 @@ const EventProgramme = require('./EventProgramme');
 const AgendaItem = require('./AgendaItem');
 const VenueHold = require('./VenueHold');
 const VenueUnavailability = require('./VenueUnavailability');
+const VenueBooking = require('./VenueBooking');
+const Notification = require('./Notification');
 
 // --- Associations ---
 
@@ -72,6 +74,23 @@ VenueHold.belongsTo(Venue, { foreignKey: 'venueId' });
 Event.hasMany(VenueHold, { foreignKey: 'eventId', as: 'venueHolds' });
 VenueHold.belongsTo(Event, { foreignKey: 'eventId' });
 
+// Event <-> VenueBooking (1:many — an event may book several venues)
+Event.hasMany(VenueBooking, { foreignKey: 'eventId', as: 'venueBookings' });
+VenueBooking.belongsTo(Event, { foreignKey: 'eventId' });
+
+// Venue <-> VenueBooking
+Venue.hasMany(VenueBooking, { foreignKey: 'venueId' });
+VenueBooking.belongsTo(Venue, { foreignKey: 'venueId' });
+
+// User <-> VenueBooking (requester / reviewer)
+User.hasMany(VenueBooking, { foreignKey: 'requestedBy' });
+VenueBooking.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester' });
+VenueBooking.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
+
+// User <-> Notification
+User.hasMany(Notification, { foreignKey: 'userId' });
+Notification.belongsTo(User, { foreignKey: 'userId' });
+
 module.exports = {
   sequelize,
   Role,
@@ -87,4 +106,6 @@ module.exports = {
   AgendaItem,
   VenueHold,
   VenueUnavailability,
+  VenueBooking,
+  Notification,
 };

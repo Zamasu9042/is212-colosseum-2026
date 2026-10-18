@@ -12,6 +12,12 @@ VenueUnavailability.init(
     startDatetime: { type: DataTypes.DATE, allowNull: false, field: 'start_datetime' },
     endDatetime: { type: DataTypes.DATE, allowNull: false, field: 'end_datetime' },
     reason: { type: DataTypes.STRING(500), allowNull: false },
+    reasonCategory: {
+      type: DataTypes.ENUM('maintenance', 'equipment_failure', 'renovation', 'safety_concern', 'other'),
+      allowNull: false,
+      defaultValue: 'other',
+      field: 'reason_category',
+    },
     createdBy: { type: DataTypes.UUID, field: 'created_by' },
   },
   {
@@ -22,5 +28,13 @@ VenueUnavailability.init(
     updatedAt: 'updated_at',
   }
 );
+
+VenueUnavailability.REASON_CATEGORIES = [
+  'maintenance',
+  'equipment_failure',
+  'renovation',
+  'safety_concern',
+  'other',
+];
 
 module.exports = VenueUnavailability;

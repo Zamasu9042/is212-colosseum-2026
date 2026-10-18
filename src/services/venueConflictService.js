@@ -6,8 +6,11 @@
 // should call so double-bookings are prevented, not just reported.
 
 const { Op } = require('sequelize');
-const { Venue, Event, VenueHold, VenueUnavailability } = require('../models');
+const { Venue, Event, VenueHold, VenueUnavailability, VenueBooking } = require('../models');
 const { BLOCKING_EVENT_STATUSES, findConflictsForVenues } = require('../utils/venueConflicts');
+
+// Venue booking statuses that still hold a claim on the venue.
+const ACTIVE_BOOKING_STATUSES = ['pending', 'approved'];
 
 class VenueConflictError extends Error {
   constructor(result) {
@@ -23,20 +26,38 @@ class VenueConflictError extends Error {
  * for the given venues. Expiry of holds is evaluated in the pure layer
  * (against `now`) rather than in SQL so the rule has one definition.
  */
-async function loadVenueSchedules(venueIds, { transaction } = {}) {
+async function loadVenueSchedules(venueIds, { transaction, excludeBookingId } = {}) {
   if (!venueIds.length) return { events: [], holds: [], unavailability: [] };
   const inVenues = { venueId: { [Op.in]: venueIds } };
 
-  const [events, holds, unavailability] = await Promise.all([
+  const bookingWhere = { ...inVenues, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } };
+  if (excludeBookingId) bookingWhere.id = { [Op.ne]: excludeBookingId };
+
+  const [events, holds, unavailability, bookings] = await Promise.all([
     Event.findAll({
       where: { ...inVenues, status: { [Op.in]: BLOCKING_EVENT_STATUSES } },
       transaction,
     }),
     VenueHold.findAll({ where: { ...inVenues, status: 'active' }, transaction }),
     VenueUnavailability.findAll({ where: inVenues, transaction }),
+    VenueBooking.findAll({ where: bookingWhere, transaction }),
   ]);
 
-  return { events, holds, unavailability };
+  // Live venue bookings (pending/approved) occupy a venue exactly like a
+  // booked event does, so they are fed to the conflict rules as events.
+  // `id` is the booking id (so excluding an event never hides its own
+  // other bookings); `eventId` points back to the real event.
+  const bookingsAsEvents = bookings.map((b) => ({
+    id: b.id,
+    eventId: b.eventId,
+    venueId: b.venueId,
+    startDatetime: b.startDatetime,
+    endDatetime: b.endDatetime,
+    status: 'planning',
+    isVenueBooking: true,
+  }));
+
+  return { events: [...events, ...bookingsAsEvents], holds, unavailability };
 }
 
 function serializeResult(result, venuesById) {
@@ -63,6 +84,7 @@ async function checkVenueConflicts({
   end,
   excludeEventId,
   excludeHoldId,
+  excludeBookingId,
   now,
   transaction,
 }) {
@@ -77,7 +99,7 @@ async function checkVenueConflicts({
     throw err;
   }
 
-  const schedules = await loadVenueSchedules(uniqueIds, { transaction });
+  const schedules = await loadVenueSchedules(uniqueIds, { transaction, excludeBookingId });
   const result = findConflictsForVenues({
     // Preserve the caller's requested order in the response.
     venues: uniqueIds.map((id) => venuesById.get(id)),
@@ -122,6 +144,7 @@ async function lockVenues(venueIds, transaction) {
 }
 
 module.exports = {
+  ACTIVE_BOOKING_STATUSES,
   VenueConflictError,
   lockVenues,
   loadVenueSchedules,
