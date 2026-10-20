@@ -127,10 +127,12 @@ describe('Event Review and Approval', () => {
   test('coordinator can list submitted and under review requests awaiting review', async () => {
     const submitted = await createSubmittedRequest(organiserA, {
       eventName: 'Submitted review queue item',
+      assignedCoordinatorId: coordinator.id,
     });
     const underReview = await createSubmittedRequest(organiserA, {
       eventName: 'Under review queue item',
       status: 'under_review',
+      assignedCoordinatorId: coordinator.id,
     });
     const draft = await createSubmittedRequest(organiserA, {
       eventName: 'Draft should not appear',
@@ -301,6 +303,7 @@ describe('Event Review and Approval', () => {
   test('coordinator can fetch a submitted request and see its review details', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Detailed coordinator review',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const res = await request(app)
@@ -330,6 +333,7 @@ describe('Event Review and Approval', () => {
   test('coordinator can approve a submitted request', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Approval candidate',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const res = await request(app)
@@ -346,6 +350,7 @@ describe('Event Review and Approval', () => {
   test('coordinator can return a request with a clarification reason', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Clarification candidate',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const res = await request(app)
@@ -364,6 +369,7 @@ describe('Event Review and Approval', () => {
   test('coordinator cannot reject without a written reason', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Incomplete rejection',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const res = await request(app)
@@ -378,6 +384,7 @@ describe('Event Review and Approval', () => {
   test('coordinator can reject with a written reason', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Rejection candidate',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const res = await request(app)
@@ -399,6 +406,7 @@ describe('Event Review and Approval', () => {
   test('updated review outcome is visible to the owning organiser', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Visible outcome candidate',
+      assignedCoordinatorId: coordinator.id,
     });
 
     await request(app)

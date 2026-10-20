@@ -1,5 +1,5 @@
 /**
- * Seeds the `roles` table with the 5 roles defined in the customer
+ * Seeds the `roles` table with the roles defined in the customer
  * briefing. Idempotent — uses findOrCreate so it's safe to re-run.
  *
  * Usage: npm run db:seed
@@ -21,6 +21,12 @@ const ROLES = [
       'Internal staff assigned to coordinate the overall planning of an event and act as the main point of contact.',
   },
   {
+    name: 'event_coordinator_lead',
+    displayName: 'Event Coordinator Lead',
+    description:
+      'Internal supervisor who assigns Event Coordinators and oversees active events and assignments.',
+  },
+  {
     name: 'venue_staff',
     displayName: 'Venue Staff',
     description:
@@ -31,6 +37,12 @@ const ROLES = [
     displayName: 'Technical Support Staff',
     description:
       'Internal staff responsible for equipment, technical requirements, reservations, and on-site technical support.',
+  },
+  {
+    name: 'safety_officer',
+    displayName: 'Safety Officer',
+    description:
+      'Internal staff member authorised to view event planning information needed for operational safety checks.',
   },
   {
     name: 'attendee',

@@ -45,7 +45,8 @@ const isOwningOrganiser = (req, event) =>
 const canViewEventBookings = (req, event) =>
   isAssignedCoordinator(req, event) ||
   isOwningOrganiser(req, event) ||
-  req.user.role === ROLE_NAMES.VENUE_STAFF;
+  req.user.role === ROLE_NAMES.VENUE_STAFF ||
+  req.user.role === ROLE_NAMES.SAFETY_OFFICER;
 
 async function notify(userId, type, message, { eventId, venueBookingId } = {}) {
   if (!userId) return;

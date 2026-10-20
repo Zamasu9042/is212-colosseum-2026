@@ -1,13 +1,15 @@
 const { DataTypes, Model } = require('sequelize');
 const sequelize = require('../config/db');
 
-// The 5 canonical roles referenced throughout the customer briefing.
+// The canonical roles referenced throughout the customer briefing.
 // Keep these constants in sync with scripts/seed-roles.js
 const ROLE_NAMES = {
   EVENT_ORGANISER: 'event_organiser',
   EVENT_COORDINATOR: 'event_coordinator',
+  EVENT_COORDINATOR_LEAD: 'event_coordinator_lead',
   VENUE_STAFF: 'venue_staff',
   TECHNICAL_SUPPORT_STAFF: 'technical_support_staff',
+  SAFETY_OFFICER: 'safety_officer',
   ATTENDEE: 'attendee',
 };
 

@@ -5,12 +5,16 @@ const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 
 const router = express.Router();
 
-// Coordinators and Technical Support Staff can view the equipment
-// catalogue to plan equipment requests / check availability.
+// Coordinators, Technical Support Staff, and Safety Officers can view the
+// equipment catalogue to plan work or assess event safety information.
 router.get(
   '/',
   authenticate,
-  authorize(ROLE_NAMES.EVENT_COORDINATOR, ROLE_NAMES.TECHNICAL_SUPPORT_STAFF),
+  authorize(
+    ROLE_NAMES.EVENT_COORDINATOR,
+    ROLE_NAMES.TECHNICAL_SUPPORT_STAFF,
+    ROLE_NAMES.SAFETY_OFFICER
+  ),
   async (req, res, next) => {
     try {
       const equipment = await Equipment.findAll();

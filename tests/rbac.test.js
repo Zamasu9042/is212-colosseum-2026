@@ -42,7 +42,7 @@ describe('RBAC middleware: authorize()', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  test('enforces boundaries independently across all 5 roles', () => {
+  test('enforces boundaries independently across every defined role', () => {
     const allRoles = Object.values(ROLE_NAMES);
 
     allRoles.forEach((role) => {
