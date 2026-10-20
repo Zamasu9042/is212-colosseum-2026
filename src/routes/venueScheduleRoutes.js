@@ -1,8 +1,13 @@
 // Venue Schedule Conflict Identification
 //
 //   POST   /api/venues/conflicts                          check one or more venues
+//   POST   /api/venues/conflicts/audit                    re-check EXISTING bookings under the current
+//                                                         rules; conflicting ones are flagged, never deleted
+//   GET    /api/venues/holds/expiring                     active holds expiring within ?withinHours (default 24)
+//   POST   /api/venues/holds/process-expiries             run the hold expiry sweep now (Venue Staff)
 //   GET    /api/venues/:id/holds                          list tentative holds
-//   POST   /api/venues/:id/holds                          place a tentative hold (409 on conflict)
+//   POST   /api/venues/:id/holds                          place a tentative hold (409 on conflict); every
+//                                                         hold gets an expiry (default 72h, capped at slot start)
 //   PATCH  /api/venues/:id/holds/:holdId/release          release a hold
 //   GET    /api/venues/:id/unavailability                 list unavailability periods
 //   POST   /api/venues/:id/unavailability                 record an unavailability period; flags
@@ -15,7 +20,7 @@
 
 const express = require('express');
 const { Op } = require('sequelize');
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const {
   sequelize,
   Venue,
@@ -42,6 +47,16 @@ const {
   windowsOverlap,
 } = require('../utils/venueConflicts');
 const { ACTIVE_BOOKING_STATUSES } = require('../services/venueConflictService');
+const {
+  HOUR_MS,
+  HoldExpiryError,
+  getHoldConfig,
+  resolveHoldExpiry,
+  holdLifecycleState,
+  isHoldDueForExpiry,
+} = require('../utils/holdExpiry');
+const { processHoldExpiries } = require('../services/holdExpiryService');
+const { auditVenueConflicts } = require('../services/bookingConflictAudit');
 
 const router = express.Router();
 
@@ -119,11 +134,104 @@ router.post(
 );
 
 // ---------------------------------------------------------------------
+// POST /api/venues/conflicts/audit   (Venue Staff)
+//
+// Body: { venueIds?: [uuid] } — omit to audit every venue with live
+// reservations. Re-checks EXISTING bookings/events under the current rules
+// (setup/turnaround, active holds, unavailability, venue status), each
+// venue independently. Conflicting ones are flagged and preserved; their
+// coordinators are notified the first time. Nothing is deleted.
+// ---------------------------------------------------------------------
+router.post(
+  '/conflicts/audit',
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  [
+    body('venueIds').optional().isArray({ max: 200 }).withMessage('venueIds must be an array of venue ids.'),
+    body('venueIds.*').isUUID().withMessage('Each venueId must be a valid UUID.'),
+  ],
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const venueIds = req.body.venueIds || [];
+      if (venueIds.length) {
+        const found = await Venue.count({ where: { id: { [Op.in]: venueIds } } });
+        if (found !== new Set(venueIds).size) {
+          return res.status(404).json({ error: 'One or more venues were not found.' });
+        }
+      }
+      res.json(await auditVenueConflicts({ venueIds }));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------
 // Tentative holds
 // ---------------------------------------------------------------------
+// effectiveStatus reports a hold whose deadline has passed as 'expired'
+// even before the sweep has stamped the row (AC3/AC5).
 function serializeHold(hold, now = new Date()) {
-  return { ...hold.toJSON(), isActive: isHoldActive(hold, now) };
+  return {
+    ...hold.toJSON(),
+    isActive: isHoldActive(hold, now),
+    effectiveStatus: holdLifecycleState(hold, now),
+  };
 }
+
+// GET /api/venues/holds/expiring?withinHours=24
+// Active holds whose deadline falls within the window, soonest first.
+// Coordinators see the holds they placed or that belong to their events;
+// Venue Staff see all.
+router.get(
+  '/holds/expiring',
+  authorize(...INTERNAL_PLANNERS),
+  [query('withinHours').optional().isFloat({ gt: 0, max: 24 * 90 }).withMessage('withinHours must be a positive number.')],
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const now = new Date();
+      const withinHours = req.query.withinHours ? Number(req.query.withinHours) : getHoldConfig().warningHours;
+      const where = {
+        status: 'active',
+        expiresAt: { [Op.gt]: now, [Op.lte]: new Date(now.getTime() + withinHours * HOUR_MS) },
+      };
+      if (req.user.role === ROLE_NAMES.EVENT_COORDINATOR) {
+        const ownEvents = await Event.findAll({ where: { coordinatorId: req.user.id }, attributes: ['id'], raw: true });
+        where[Op.or] = [{ heldBy: req.user.id }, { eventId: { [Op.in]: ownEvents.map((e) => e.id) } }];
+      }
+      const holds = await VenueHold.findAll({
+        where,
+        include: [{ model: Venue, attributes: ['id', 'name', 'location'] }],
+        order: [['expiresAt', 'ASC']],
+      });
+      res.json({ withinHours, holds: holds.map((h) => serializeHold(h, now)), count: holds.length });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// POST /api/venues/holds/process-expiries — runs the same sweep the
+// background scheduler runs (expire due holds, send reminders).
+router.post(
+  '/holds/process-expiries',
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  async (req, res, next) => {
+    try {
+      const result = await processHoldExpiries();
+      res.json({
+        ranAt: result.ranAt,
+        expiredCount: result.expired.length,
+        warnedCount: result.warned.length,
+        expired: result.expired,
+        warned: result.warned,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 router.get(
   '/:id/holds',
@@ -152,15 +260,12 @@ router.post(
   [
     venueIdParam,
     ...windowValidators,
+    // Optional in the request, but every hold ends up with one (AC1):
+    // see resolveHoldExpiry for the default and the rules.
     body('expiresAt')
       .optional({ nullable: true })
       .isISO8601()
-      .withMessage('expiresAt must be a valid ISO8601 date.')
-      .bail()
-      .custom((value) => {
-        if (new Date(value) <= new Date()) throw new Error('expiresAt must be in the future.');
-        return true;
-      }),
+      .withMessage('expiresAt must be a valid ISO8601 date.'),
     body('eventId').optional({ nullable: true }).isUUID(),
     body('notes').optional({ nullable: true }).isString().isLength({ max: 2000 }),
   ],
@@ -170,9 +275,17 @@ router.post(
       const venue = await findVenueOr404(req.params.id, res);
       if (!venue) return;
 
-      const { startDateTime, endDateTime, expiresAt, eventId, notes } = req.body;
+      const { startDateTime, endDateTime, eventId, notes } = req.body;
       if (eventId && !(await Event.findByPk(eventId))) {
         return res.status(404).json({ error: 'Event not found.' });
+      }
+
+      let expiresAt;
+      try {
+        expiresAt = resolveHoldExpiry({ requestedExpiresAt: req.body.expiresAt, start: startDateTime });
+      } catch (expiryErr) {
+        if (expiryErr instanceof HoldExpiryError) return res.status(400).json({ error: expiryErr.message });
+        throw expiryErr;
       }
 
       // Lock the venue row so two concurrent hold requests for the same
@@ -194,7 +307,7 @@ router.post(
             heldBy: req.user.id,
             startDatetime: startDateTime,
             endDatetime: endDateTime,
-            expiresAt: expiresAt || null,
+            expiresAt,
             notes,
           },
           { transaction }
@@ -227,6 +340,11 @@ router.patch(
       }
       if (hold.status !== 'active') {
         return res.status(409).json({ error: `Hold is already ${hold.status}.` });
+      }
+      // Past its deadline: it has already expired (the sweep will stamp it
+      // and notify), so it cannot be "released" as if it were still live.
+      if (isHoldDueForExpiry(hold)) {
+        return res.status(409).json({ error: 'Hold is already expired.' });
       }
 
       await hold.update({ status: 'released' });
@@ -400,7 +518,11 @@ router.post(
         }
       );
 
-      res.status(201).json({ unavailability: period, affected, affectedBookings, notificationsSent });
+      // Flag (never delete) any other reservation the new period now
+      // conflicts with. Coordinators were already notified above.
+      const conflictAudit = await auditVenueConflicts({ venueIds: [venue.id], notify: false });
+
+      res.status(201).json({ unavailability: period, affected, affectedBookings, notificationsSent, conflictAudit });
     } catch (err) {
       next(err);
     }
@@ -418,6 +540,8 @@ router.delete(
         where: { id: req.params.periodId, venueId: req.params.id },
       });
       if (!deleted) return res.status(404).json({ error: 'Unavailability period not found.' });
+      // Clears conflict flags that only existed because of this period.
+      await auditVenueConflicts({ venueIds: [req.params.id], notify: false });
       res.status(204).end();
     } catch (err) {
       next(err);

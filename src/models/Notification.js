@@ -11,6 +11,7 @@ Notification.init(
     message: { type: DataTypes.TEXT, allowNull: false },
     eventId: { type: DataTypes.UUID, field: 'event_id' },
     venueBookingId: { type: DataTypes.UUID, field: 'venue_booking_id' },
+    venueHoldId: { type: DataTypes.UUID, field: 'venue_hold_id' },
     readAt: { type: DataTypes.DATE, field: 'read_at' },
   },
   {

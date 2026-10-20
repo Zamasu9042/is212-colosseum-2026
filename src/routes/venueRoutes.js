@@ -7,6 +7,10 @@ const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
 const { computeAvailability } = require('../utils/venueAvailability');
 const { loadVenueSchedules } = require('../services/venueConflictService');
+const {
+  SCHEDULE_AFFECTING_VENUE_FIELDS,
+  auditVenueConflicts,
+} = require('../services/bookingConflictAudit');
 
 const router = express.Router();
 
@@ -235,12 +239,22 @@ router.post('/', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), async (req, re
   }
 });
 
+// Changing setup/turnaround minutes or the venue status can make existing
+// bookings conflict under the updated rules. Those bookings are re-checked
+// straight away and flagged (never deleted); the response's
+// `conflictAudit` lists what was flagged or cleared.
 router.patch('/:id', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), async (req, res, next) => {
   try {
     const venue = await Venue.findByPk(req.params.id);
     if (!venue) return res.status(404).json({ error: 'Venue not found.' });
+    const before = Object.fromEntries(SCHEDULE_AFFECTING_VENUE_FIELDS.map((f) => [f, venue[f]]));
     await venue.update(req.body);
-    res.json({ venue });
+
+    const scheduleChanged = SCHEDULE_AFFECTING_VENUE_FIELDS.some((f) => venue[f] !== before[f]);
+    if (!scheduleChanged) return res.json({ venue });
+
+    const conflictAudit = await auditVenueConflicts({ venueIds: [venue.id] });
+    res.json({ venue, conflictAudit });
   } catch (err) {
     next(err);
   }

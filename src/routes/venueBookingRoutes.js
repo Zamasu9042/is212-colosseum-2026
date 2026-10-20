@@ -186,6 +186,8 @@ router.get(
 // GET /api/venue-bookings — Venue Staff queue. Defaults to pending.
 // ?status=pending|approved|rejected|cancelled|needs_replacement|replaced|all
 // ?venueId=<uuid>
+// ?flagged=true  only bookings flagged by the conflict audit (status
+//                defaults to `all` when flagged=true and no status given)
 // ---------------------------------------------------------------------
 router.get(
   '/venue-bookings',
@@ -193,13 +195,16 @@ router.get(
   authorize(ROLE_NAMES.VENUE_STAFF),
   query('status').optional().isIn([...VenueBooking.STATUSES, 'all']),
   query('venueId').optional().isUUID(),
+  query('flagged').optional().isBoolean(),
   validateRequest,
   async (req, res, next) => {
     try {
-      const status = req.query.status || 'pending';
+      const flaggedOnly = req.query.flagged === 'true';
+      const status = req.query.status || (flaggedOnly ? 'all' : 'pending');
       const where = {};
       if (status !== 'all') where.status = status;
       if (req.query.venueId) where.venueId = req.query.venueId;
+      if (flaggedOnly) where.conflictFlaggedAt = { [Op.ne]: null };
 
       const bookings = await VenueBooking.findAll({
         where,
@@ -394,6 +399,9 @@ router.patch(
         reviewReason: null,
         reviewedBy: null,
         reviewedAt: null,
+        // It just passed the full conflict checks, so any audit flag is stale.
+        conflictFlaggedAt: null,
+        conflictDetails: null,
       });
       res.json({ booking });
     } catch (err) {
@@ -479,6 +487,8 @@ router.post(
         reviewedBy: req.user.id,
         reviewedAt: new Date(),
         reviewReason: null,
+        conflictFlaggedAt: null,
+        conflictDetails: null,
       });
       await notify(
         event.coordinatorId,

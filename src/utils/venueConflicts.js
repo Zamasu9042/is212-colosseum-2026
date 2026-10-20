@@ -246,7 +246,83 @@ function findAffectedByUnavailability({ venue, start, end, events = [], holds = 
   return affected;
 }
 
+/**
+ * Re-checks EXISTING reservations of one venue against the current rules
+ * (Week 7 — Extend Venue Conflict Detection). Used when the rules or the
+ * venue's data change (setup/turnaround minutes, unavailability, status)
+ * so reservations accepted under the old rules can be flagged.
+ *
+ * Reservations are live venue bookings (`bookings`, VenueBooking rows) and
+ * events that reference the venue directly (`events`). Each one is checked
+ * against everything else on the venue: the other reservations (with
+ * setup/turnaround on both sides), active holds and unavailability
+ * periods, plus the venue's own status.
+ *
+ * Something never conflicts with itself, its own event's holds, or the
+ * other representation of the same reservation (an event's direct venue
+ * row vs. its venue booking). An event's OTHER bookings at the same venue
+ * still count, exactly like runBookingChecks.
+ *
+ * Reservations that already ended before `now` are skipped.
+ * Pure: returns [{ kind, id, eventId, conflicts }] and changes nothing.
+ */
+function auditExistingReservations({
+  venue,
+  bookings = [],
+  events = [],
+  holds = [],
+  unavailability = [],
+  now = new Date(),
+}) {
+  const reservations = [
+    ...events
+      .filter((e) => belongsToVenue(e, venue) && BLOCKING_EVENT_STATUSES.includes(e.status))
+      .map((e) => ({
+        kind: 'event',
+        id: e.id,
+        eventId: e.id,
+        venueId: venue.id,
+        status: e.status,
+        startDatetime: e.startDatetime,
+        endDatetime: e.endDatetime,
+      })),
+    ...bookings
+      .filter((b) => belongsToVenue(b, venue))
+      .map((b) => ({
+        kind: 'venue_booking',
+        id: b.id,
+        eventId: b.eventId,
+        venueId: venue.id,
+        status: 'planning', // live bookings occupy the venue like a booked event
+        startDatetime: b.startDatetime,
+        endDatetime: b.endDatetime,
+      })),
+  ];
+
+  return reservations
+    .filter((r) => toDate(r.endDatetime) > toDate(now))
+    .map((r) => {
+      const others = reservations.filter(
+        (o) => o !== r && !(o.eventId === r.eventId && o.kind !== r.kind)
+      );
+      const { conflicts } = findVenueConflicts({
+        venue,
+        start: r.startDatetime,
+        end: r.endDatetime,
+        // findVenueConflicts' excludeEventId skips rows whose id matches, so
+        // booking rows keep their own ids and only the event row is skipped.
+        events: others,
+        holds,
+        unavailability,
+        excludeEventId: r.eventId,
+        now,
+      });
+      return { kind: r.kind, id: r.id, eventId: r.eventId, conflicts };
+    });
+}
+
 module.exports = {
+  auditExistingReservations,
   findAffectedByUnavailability,
   BLOCKING_EVENT_STATUSES,
   CONFLICT_TYPES,

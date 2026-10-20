@@ -91,6 +91,13 @@ VenueBooking.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
 User.hasMany(Notification, { foreignKey: 'userId' });
 Notification.belongsTo(User, { foreignKey: 'userId' });
 
+// VenueHold <-> Notification (hold expiry reminders / expiry notices)
+VenueHold.hasMany(Notification, { foreignKey: 'venueHoldId' });
+Notification.belongsTo(VenueHold, { foreignKey: 'venueHoldId' });
+
+// User (holder) <-> VenueHold
+VenueHold.belongsTo(User, { foreignKey: 'heldBy', as: 'holder' });
+
 module.exports = {
   sequelize,
   Role,
