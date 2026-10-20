@@ -118,6 +118,36 @@ have all), `availability` (`available`|`unavailable`), `startDateTime` +
 When nothing matches, the response includes a `message` field alongside
 an empty `venues` array.
 
+### Venue availability calendar
+
+Event Coordinators can request a render-ready timeline with `GET
+/api/venues/availability`. Filter it by `date=YYYY-MM-DD` or an explicit
+`startDateTime`/`endDateTime` pair, and optionally by one or more comma-separated
+`venueId` values. Each venue returns ordered `slots` with a machine-readable
+`state`, a `displayState`, and `isAvailable`:
+
+- `available` — Available
+- `tentative_hold` — Tentative Hold (`planning` or `awaiting_arrangements` event)
+- `confirmed_booking` — Confirmed Booking
+- `temporarily_unavailable` — venue is blocked or under maintenance
+- `expired_hold` — cancelled reservation; visible for context but requestable
+
+Every reservation slot is extended by the venue's `setupMinutes` and
+`teardownMinutes`, so the available portions can safely be requested.
+
+### Venue setup and turnaround configuration
+
+Venue Staff can set timing when creating or updating a venue with `POST` or
+`PATCH /api/venues/:id`. Send `setupMinutes` and either `turnaroundMinutes`
+(preferred) or the backwards-compatible `teardownMinutes`; values are whole
+minutes from 0 to 1440. The response exposes both `turnaroundMinutes` and
+`teardownMinutes`.
+
+Timing updates return `hasConflicts` and a `conflicts` list when they cause
+existing tentative or confirmed reservations to overlap. No reservation is
+removed: each conflict reports the two existing event IDs and their shared
+effective occupied interval.
+
 ### Venue Staff booking decisions
 
 Venue Staff can work the pending reservation queue and search it by event

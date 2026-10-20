@@ -1,11 +1,16 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { query } = require('express-validator');
+const { body, query } = require('express-validator');
 const { Venue, Event } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
-const { computeAvailability } = require('../utils/venueAvailability');
+const {
+  computeAvailability,
+  buildAvailabilitySlots,
+  findReservationConflicts,
+  AVAILABILITY_STATES,
+} = require('../utils/venueAvailability');
 
 const router = express.Router();
 
@@ -57,6 +62,21 @@ function parseDateRange(reqQuery) {
   return { queryStart, queryEnd };
 }
 
+// Calendar requests can target a whole UTC calendar date, or an explicit
+// range. A date is intentionally kept separate from search's proposed-event
+// range because this endpoint returns *all* slots in the requested period.
+function parseAvailabilityRange(reqQuery) {
+  if (reqQuery.date) {
+    if (reqQuery.startDateTime || reqQuery.endDateTime) {
+      throw { status: 400, message: 'date cannot be combined with startDateTime or endDateTime.' };
+    }
+    const start = new Date(`${reqQuery.date}T00:00:00.000Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { queryStart: start, queryEnd: end };
+  }
+  return parseDateRange(reqQuery);
+}
+
 /** Groups Event rows by venueId for O(1) lookup while computing availability. */
 function groupEventsByVenue(events) {
   return events.reduce((acc, event) => {
@@ -75,9 +95,31 @@ function serializeVenue(venue, queryStart, queryEnd, eventsForVenue) {
   );
   return {
     ...venue.toJSON(),
+    // `teardownMinutes` is the persisted column name retained for backwards
+    // compatibility. Expose the user-story term as well for staff clients.
+    turnaroundMinutes: venue.teardownMinutes,
     isAvailable,
     conflictingEventCount: conflictingEvents.length,
   };
+}
+
+const venueTimingValidators = [
+  body('setupMinutes').optional().isInt({ min: 0, max: 1440 }).withMessage('setupMinutes must be between 0 and 1440 minutes.'),
+  body('teardownMinutes').optional().isInt({ min: 0, max: 1440 }).withMessage('teardownMinutes must be between 0 and 1440 minutes.'),
+  body('turnaroundMinutes').optional().isInt({ min: 0, max: 1440 }).withMessage('turnaroundMinutes must be between 0 and 1440 minutes.'),
+];
+
+function normalizeVenueTiming(payload) {
+  const normalized = { ...payload };
+  if (normalized.turnaroundMinutes !== undefined && normalized.teardownMinutes !== undefined
+    && Number(normalized.turnaroundMinutes) !== Number(normalized.teardownMinutes)) {
+    throw { status: 400, message: 'turnaroundMinutes and teardownMinutes must match when both are provided.' };
+  }
+  if (normalized.turnaroundMinutes !== undefined) normalized.teardownMinutes = Number(normalized.turnaroundMinutes);
+  if (normalized.setupMinutes !== undefined) normalized.setupMinutes = Number(normalized.setupMinutes);
+  if (normalized.teardownMinutes !== undefined) normalized.teardownMinutes = Number(normalized.teardownMinutes);
+  delete normalized.turnaroundMinutes;
+  return normalized;
 }
 
 // ---------------------------------------------------------------------
@@ -193,6 +235,69 @@ router.get('/', authenticate, venueSearchValidators, validateRequest, async (req
   }
 });
 
+// GET /api/venues/availability — calendar-friendly venue availability.
+// Filter by `venueId` (a comma-separated list is accepted) and either
+// `date=YYYY-MM-DD` or startDateTime+endDateTime. Slots include each venue's
+// setup/teardown turnaround time, so displayed availability is request-safe.
+const availabilityValidators = [
+  query('date').optional().isISO8601({ strict: true, strictSeparator: true }).withMessage('date must be YYYY-MM-DD.'),
+  ...dateRangeValidators,
+  query('venueId').optional().isString().trim().isLength({ max: 2000 }),
+];
+
+router.get('/availability', authenticate, availabilityValidators, validateRequest, async (req, res, next) => {
+  try {
+    let queryStart, queryEnd;
+    try {
+      ({ queryStart, queryEnd } = parseAvailabilityRange(req.query));
+    } catch (rangeErr) {
+      return res.status(rangeErr.status).json({ error: rangeErr.message });
+    }
+    if (!queryStart || !queryEnd) {
+      return res.status(400).json({ error: 'Provide date or startDateTime and endDateTime.' });
+    }
+
+    const venueIds = req.query.venueId
+      ? req.query.venueId.split(',').map((id) => id.trim()).filter(Boolean)
+      : [];
+    if (venueIds.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+      return res.status(400).json({ error: 'venueId must contain valid UUID values.' });
+    }
+
+    const venues = await Venue.findAll({
+      where: venueIds.length ? { id: { [Op.in]: venueIds } } : undefined,
+      order: [['name', 'ASC']],
+    });
+    const events = venues.length
+      ? await Event.findAll({ where: { venueId: { [Op.in]: venues.map((venue) => venue.id) } } })
+      : [];
+    const eventsByVenue = groupEventsByVenue(events);
+    const availability = venues.map((venue) => ({
+      venue: {
+        id: venue.id,
+        name: venue.name,
+        location: venue.location,
+        status: venue.status,
+        setupMinutes: venue.setupMinutes,
+        teardownMinutes: venue.teardownMinutes,
+        turnaroundMinutes: venue.teardownMinutes,
+      },
+      slots: buildAvailabilitySlots(venue, eventsByVenue[venue.id], queryStart, queryEnd),
+      conflicts: findReservationConflicts(venue, eventsByVenue[venue.id]),
+    }));
+
+    res.json({
+      startDateTime: queryStart.toISOString(),
+      endDateTime: queryEnd.toISOString(),
+      states: Object.values(AVAILABILITY_STATES),
+      availability,
+      count: availability.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/venues/:id — full details for one venue, e.g. after selecting
 // it from search results, for further review or to proceed to booking.
 // Accepts the same optional startDateTime/endDateTime window so the
@@ -217,22 +322,26 @@ router.get('/:id', authenticate, dateRangeValidators, validateRequest, async (re
 });
 
 // Only Venue Staff may create, update, or block/unblock venues.
-router.post('/', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), async (req, res, next) => {
+router.post('/', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), venueTimingValidators, validateRequest, async (req, res, next) => {
   try {
-    const venue = await Venue.create(req.body);
-    res.status(201).json({ venue });
+    const venue = await Venue.create(normalizeVenueTiming(req.body));
+    res.status(201).json({ venue: serializeVenue(venue) });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });
 
-router.patch('/:id', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), async (req, res, next) => {
+router.patch('/:id', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), venueTimingValidators, validateRequest, async (req, res, next) => {
   try {
     const venue = await Venue.findByPk(req.params.id);
     if (!venue) return res.status(404).json({ error: 'Venue not found.' });
-    await venue.update(req.body);
-    res.json({ venue });
+    await venue.update(normalizeVenueTiming(req.body));
+    const events = await Event.findAll({ where: { venueId: venue.id } });
+    const conflicts = findReservationConflicts(venue, events);
+    res.json({ venue: serializeVenue(venue), conflicts, hasConflicts: conflicts.length > 0 });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });
