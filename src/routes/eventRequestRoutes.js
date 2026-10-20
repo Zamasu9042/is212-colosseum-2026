@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { body, query } = require('express-validator');
-const { sequelize, EventRequest, Role, User } = require('../models');
+const { body, query, param } = require('express-validator');
+const { sequelize, EventRequest, Event, Role, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -76,45 +76,6 @@ const assignedCoordinatorInclude = {
 };
 
 const detailedIncludes = [organiserInclude, assignedCoordinatorInclude];
-
-async function findLeastAssignedCoordinator(transaction) {
-  const coordinators = await User.findAll({
-    attributes: ['id', 'email', 'firstName', 'lastName'],
-    where: { isActive: true },
-    include: [
-      {
-        model: Role,
-        attributes: [],
-        where: { name: ROLE_NAMES.EVENT_COORDINATOR },
-        required: true,
-      },
-    ],
-    order: [
-      ['email', 'ASC'],
-      ['id', 'ASC'],
-    ],
-    transaction,
-  });
-
-  if (coordinators.length === 0) return null;
-
-  const coordinatorsWithCounts = await Promise.all(
-    coordinators.map(async (coordinator) => ({
-      coordinator,
-      assignedCount: await EventRequest.count({
-        where: {
-          assignedCoordinatorId: coordinator.id,
-          status: { [Op.in]: ['submitted', 'under_review'] },
-        },
-        transaction,
-      }),
-    }))
-  );
-
-  return coordinatorsWithCounts.reduce((leastAssigned, current) =>
-    current.assignedCount < leastAssigned.assignedCount ? current : leastAssigned
-  ).coordinator;
-}
 
 // These are the minimum operational details a Venue Staff member needs before
 // accepting a reservation.  A string containing only whitespace is not a
@@ -251,9 +212,8 @@ router.get(
   }
 );
 
-// Event Coordinators review submitted requests from this queue. It
-// deliberately excludes drafts (still private working copies) and final
-// outcomes such as approved/rejected/returned.
+// Event Coordinators review only requests assigned to them. Drafts remain
+// private working copies and final outcomes are excluded.
 router.get(
   '/review-queue',
   authenticate,
@@ -261,11 +221,59 @@ router.get(
   async (req, res, next) => {
     try {
       const requests = await EventRequest.findAll({
-        where: { status: { [Op.in]: ['submitted', 'under_review'] } },
+        where: {
+          status: { [Op.in]: ['submitted', 'under_review'] },
+          assignedCoordinatorId: req.user.id,
+        },
         include: detailedIncludes,
         order: [['updated_at', 'DESC']],
       });
       res.json({ eventRequests: requests });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Shared Lead queue. Assignment is deliberately not claimed by a Lead: every
+// Event Coordinator Lead sees the same unassigned requests.
+router.get(
+  '/unassigned',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_COORDINATOR_LEAD),
+  async (req, res, next) => {
+    try {
+      const requests = await EventRequest.findAll({
+        where: {
+          status: { [Op.in]: ['submitted', 'under_review'] },
+          assignedCoordinatorId: null,
+        },
+        include: detailedIncludes,
+        order: [['updated_at', 'DESC']],
+      });
+      res.json({ eventRequests: requests, count: requests.length });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// All Leads have shared supervisory visibility of Coordinator assignments.
+router.get(
+  '/assignments',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_COORDINATOR_LEAD),
+  async (req, res, next) => {
+    try {
+      const requests = await EventRequest.findAll({
+        where: {
+          status: { [Op.in]: ['submitted', 'under_review', 'approved'] },
+          assignedCoordinatorId: { [Op.not]: null },
+        },
+        include: detailedIncludes,
+        order: [['updated_at', 'DESC']],
+      });
+      res.json({ eventRequests: requests, count: requests.length });
     } catch (err) {
       next(err);
     }
@@ -340,8 +348,8 @@ router.get(
   }
 );
 
-// Event Coordinators can view any request (to review/assign).
-// An Event Organiser may only view their OWN request — this enforces
+// An assigned Event Coordinator may view their request. An Event Organiser may
+// only view their OWN request — this enforces
 // the briefing's requirement that an Organiser should not see events
 // belonging to unrelated clients.
 router.get(
@@ -350,10 +358,14 @@ router.get(
   authorizeOwnerOrRoles(
     async (req) => {
       const request = await EventRequest.findByPk(req.params.id);
-      return !!request && request.organiserId === req.user.id;
+      if (!request) return false;
+      if (req.user.role === ROLE_NAMES.EVENT_COORDINATOR) {
+        return request.assignedCoordinatorId === req.user.id;
+      }
+      return request.organiserId === req.user.id;
     },
-    ROLE_NAMES.EVENT_COORDINATOR,
-    ROLE_NAMES.VENUE_STAFF
+    ROLE_NAMES.VENUE_STAFF,
+    ROLE_NAMES.SAFETY_OFFICER
   ),
   async (req, res, next) => {
     try {
@@ -363,6 +375,61 @@ router.get(
         eventRequest:
           req.user.role === ROLE_NAMES.VENUE_STAFF ? serializeBookingForReview(request) : request,
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Assign or reassign a Coordinator. The existing EventRequest assignment is
+// the source of truth before an Event exists; once it does, both records stay
+// aligned in one transaction. Leads share this capability—there is no claim
+// or exclusive Lead ownership.
+router.patch(
+  '/:id/assignment',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_COORDINATOR_LEAD),
+  param('id').isUUID(),
+  body('coordinatorId').isUUID(),
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const result = await sequelize.transaction(async (transaction) => {
+        const eventRequest = await EventRequest.findByPk(req.params.id, {
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!eventRequest) return { error: 'Event request not found.', status: 404 };
+
+        const event = await Event.findOne({
+          where: { eventRequestId: eventRequest.id },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!event && !['submitted', 'under_review'].includes(eventRequest.status)) {
+          return { error: 'Only submitted or under review requests can be assigned.', status: 409 };
+        }
+        if (event && ['completed', 'cancelled'].includes(event.status)) {
+          return { error: `Cannot reassign a ${event.status} event.`, status: 409 };
+        }
+
+        const coordinator = await User.findOne({
+          where: { id: req.body.coordinatorId, isActive: true },
+          include: [{ model: Role, where: { name: ROLE_NAMES.EVENT_COORDINATOR }, required: true }],
+          transaction,
+        });
+        if (!coordinator) {
+          return { error: 'coordinatorId must identify an active Event Coordinator.', status: 422 };
+        }
+
+        await eventRequest.update({ assignedCoordinatorId: coordinator.id }, { transaction });
+        if (event) await event.update({ coordinatorId: coordinator.id }, { transaction });
+        return { eventRequest, event };
+      });
+
+      if (result.error) return res.status(result.status).json({ error: result.error });
+      await result.eventRequest.reload({ include: detailedIncludes });
+      res.json({ eventRequest: result.eventRequest, event: result.event });
     } catch (err) {
       next(err);
     }
@@ -430,6 +497,13 @@ router.patch(
 
       const request = await EventRequest.findByPk(req.params.id);
       if (!request) return res.status(404).json({ error: 'Event request not found.' });
+
+      if (
+        req.user.role === ROLE_NAMES.EVENT_COORDINATOR &&
+        request.assignedCoordinatorId !== req.user.id
+      ) {
+        return res.status(403).json({ error: 'Forbidden. You do not have access to this resource.' });
+      }
 
       if (!['submitted', 'under_review'].includes(request.status)) {
         return res
@@ -520,25 +594,7 @@ router.post(
         });
       }
 
-      const assignedCoordinator = await sequelize.transaction(async (transaction) => {
-        const coordinator = await findLeastAssignedCoordinator(transaction);
-        if (!coordinator) return null;
-
-        await eventRequest.update(
-          {
-            status: 'submitted',
-            submittedAt: new Date(),
-            assignedCoordinatorId: coordinator.id,
-          },
-          { transaction }
-        );
-
-        return coordinator;
-      });
-
-      if (!assignedCoordinator) {
-        return res.status(409).json({ error: 'No active Event Coordinator is available.' });
-      }
+      await eventRequest.update({ status: 'submitted', submittedAt: new Date(), assignedCoordinatorId: null });
 
       await eventRequest.reload({ include: detailedIncludes });
       res.json({ eventRequest });
