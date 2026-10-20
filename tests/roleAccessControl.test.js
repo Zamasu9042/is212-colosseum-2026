@@ -9,6 +9,7 @@ const {
   Venue,
   VenueBooking,
   Equipment,
+  Notification,
   ROLE_NAMES,
 } = require('../src/models');
 const { hashPassword } = require('../src/utils/password');
@@ -155,22 +156,57 @@ describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
     );
   });
 
-  test('a Lead reassignment updates a linked active Event in the same operation', async () => {
-    const eventRequest = await makeEventRequest(organiser, 'linked event', {
-      status: 'approved',
-      assignedCoordinatorId: coordinatorA.id,
-    });
-    const event = await makeEvent(eventRequest, coordinatorA);
+  test('a Lead can assign once, the Coordinator is notified, and reassignment is rejected', async () => {
+    const eventRequest = await makeEventRequest(organiser, 'initial assignment');
 
-    const res = await request(app)
+    const assigned = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+      .set(auth(leadBToken))
+      .send({ coordinatorId: coordinatorA.id });
+
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.eventRequest.assignedCoordinatorId).toBe(coordinatorA.id);
+    const notifications = (await Notification.findAll({
+      where: { type: 'event_coordinator_assigned' },
+    })).filter((notification) => notification.message.includes(eventRequest.eventName));
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].userId).toBe(coordinatorA.id);
+    expect(notifications[0].message).toContain(eventRequest.eventName);
+
+    const secondAttempt = await request(app)
       .patch(`/api/event-requests/${eventRequest.id}/assignment`)
       .set(auth(leadBToken))
       .send({ coordinatorId: coordinatorB.id });
 
-    expect(res.status).toBe(200);
-    expect(res.body.eventRequest.assignedCoordinatorId).toBe(coordinatorB.id);
-    expect(res.body.event.coordinatorId).toBe(coordinatorB.id);
-    expect((await Event.findByPk(event.id)).coordinatorId).toBe(coordinatorB.id);
+    expect(secondAttempt.status).toBe(409);
+    expect((await EventRequest.findByPk(eventRequest.id)).assignedCoordinatorId).toBe(coordinatorA.id);
+    const notificationsAfterSecondAttempt = (await Notification.findAll({
+      where: { type: 'event_coordinator_assigned' },
+    })).filter((notification) => notification.message.includes(eventRequest.eventName));
+    expect(notificationsAfterSecondAttempt).toHaveLength(1);
+  });
+
+  test('concurrent Lead assignments result in one Coordinator and one notification', async () => {
+    const eventRequest = await makeEventRequest(organiser, 'concurrent assignment');
+    const attempts = await Promise.all([
+      request(app)
+        .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+        .set(auth(leadAToken))
+        .send({ coordinatorId: coordinatorA.id }),
+      request(app)
+        .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+        .set(auth(leadBToken))
+        .send({ coordinatorId: coordinatorB.id }),
+    ]);
+
+    expect(attempts.map((attempt) => attempt.status).sort()).toEqual([200, 409]);
+    const persisted = await EventRequest.findByPk(eventRequest.id);
+    expect([coordinatorA.id, coordinatorB.id]).toContain(persisted.assignedCoordinatorId);
+    const notifications = (await Notification.findAll({
+      where: { type: 'event_coordinator_assigned' },
+    })).filter((notification) => notification.message.includes(eventRequest.eventName));
+    expect(notifications).toHaveLength(1);
+    expect(notifications.map((notification) => notification.userId)).toContain(persisted.assignedCoordinatorId);
   });
 
   test('all Leads can view active events, excluding completed and cancelled events', async () => {
@@ -211,6 +247,10 @@ describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
       .set(auth(leadAToken))
       .send({ coordinatorId: inactiveCoordinator.id });
     expect(inactive.status).toBe(422);
+    const notifications = (await Notification.findAll({
+      where: { type: 'event_coordinator_assigned' },
+    })).filter((notification) => notification.message.includes(eventRequest.eventName));
+    expect(notifications).toHaveLength(0);
   });
 
   test('Coordinators can review only requests assigned to them', async () => {

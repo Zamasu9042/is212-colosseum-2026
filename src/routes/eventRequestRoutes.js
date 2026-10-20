@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { body, query, param } = require('express-validator');
-const { sequelize, EventRequest, Event, Role, User } = require('../models');
+const { sequelize, EventRequest, Notification, Role, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -381,10 +381,8 @@ router.get(
   }
 );
 
-// Assign or reassign a Coordinator. The existing EventRequest assignment is
-// the source of truth before an Event exists; once it does, both records stay
-// aligned in one transaction. Leads share this capability—there is no claim
-// or exclusive Lead ownership.
+// Assign one Coordinator to an unassigned request. Leads share this capability
+// — there is no claim, exclusive ownership, or reassignment workflow.
 router.patch(
   '/:id/assignment',
   authenticate,
@@ -401,16 +399,11 @@ router.patch(
         });
         if (!eventRequest) return { error: 'Event request not found.', status: 404 };
 
-        const event = await Event.findOne({
-          where: { eventRequestId: eventRequest.id },
-          transaction,
-          lock: transaction.LOCK.UPDATE,
-        });
-        if (!event && !['submitted', 'under_review'].includes(eventRequest.status)) {
+        if (!['submitted', 'under_review'].includes(eventRequest.status)) {
           return { error: 'Only submitted or under review requests can be assigned.', status: 409 };
         }
-        if (event && ['completed', 'cancelled'].includes(event.status)) {
-          return { error: `Cannot reassign a ${event.status} event.`, status: 409 };
+        if (eventRequest.assignedCoordinatorId) {
+          return { error: 'This event request already has an assigned Coordinator.', status: 409 };
         }
 
         const coordinator = await User.findOne({
@@ -423,13 +416,20 @@ router.patch(
         }
 
         await eventRequest.update({ assignedCoordinatorId: coordinator.id }, { transaction });
-        if (event) await event.update({ coordinatorId: coordinator.id }, { transaction });
-        return { eventRequest, event };
+        await Notification.create(
+          {
+            userId: coordinator.id,
+            type: 'event_coordinator_assigned',
+            message: `You have been assigned to coordinate event request: ${eventRequest.eventName}.`,
+          },
+          { transaction }
+        );
+        return { eventRequest };
       });
 
       if (result.error) return res.status(result.status).json({ error: result.error });
       await result.eventRequest.reload({ include: detailedIncludes });
-      res.json({ eventRequest: result.eventRequest, event: result.event });
+      res.json({ eventRequest: result.eventRequest });
     } catch (err) {
       next(err);
     }
