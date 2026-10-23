@@ -317,6 +317,7 @@ describe('Event Review and Approval', () => {
   test('a final decision cannot be overwritten by a later review request', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Final decision is immutable',
+      assignedCoordinatorId: coordinator.id,
     });
 
     const firstDecision = await request(app)
