@@ -1,6 +1,7 @@
 require('dotenv').config();
 const app = require('./app');
 const sequelize = require('./config/db');
+const { startHoldExpiryScheduler } = require('./services/holdExpiryService');
 
 const PORT = process.env.PORT || 4000;
 
@@ -17,6 +18,11 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`🚀 ConnectSphere API listening on http://localhost:${PORT}`);
   });
+
+  // Expires tentative holds whose deadline has passed and sends
+  // "expiring soon" / "expired" notifications (Week 7). Interval is
+  // HOLD_EXPIRY_SWEEP_INTERVAL_MS (default 60s).
+  startHoldExpiryScheduler();
 }
 
 start();

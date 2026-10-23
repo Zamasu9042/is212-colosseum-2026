@@ -127,6 +127,52 @@ describe('Attendee Controller', () => {
         })
       );
     });
+
+    test('clears optional phone and organization fields when null is supplied', async () => {
+      const mockUser = {
+        id: 'attendee-123',
+        email: 'attendee@example.com',
+        firstName: 'Jane',
+        lastName: 'Smith',
+        phone: '+6599999999',
+        organization: 'ConnectSphere Club',
+        isActive: true,
+        update: jest.fn().mockImplementation(function (fields) {
+          Object.assign(this, fields);
+          return Promise.resolve(this);
+        }),
+      };
+      User.findByPk.mockResolvedValue(mockUser);
+
+      const req = {
+        user: { id: 'attendee-123', role: 'attendee' },
+        body: { phone: null, organization: null },
+      };
+      const res = mockResponse();
+      const next = jest.fn();
+
+      await attendeeController.updateProfile(req, res, next);
+
+      expect(mockUser.update).toHaveBeenCalledWith({ phone: null, organization: null });
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ attendee: expect.objectContaining({ phone: null, organization: null }) })
+      );
+    });
+
+    test('returns 404 instead of updating a deactivated attendee', async () => {
+      User.findByPk.mockResolvedValue({ id: 'attendee-123', isActive: false, update: jest.fn() });
+      const res = mockResponse();
+
+      await attendeeController.updateProfile(
+        { user: { id: 'attendee-123', role: 'attendee' }, body: { firstName: 'Jane' } },
+        res,
+        jest.fn()
+      );
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringMatching(/deactivated/i) }));
+    });
   });
 
 });

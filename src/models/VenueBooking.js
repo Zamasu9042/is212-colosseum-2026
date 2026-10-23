@@ -32,6 +32,10 @@ VenueBooking.init(
     reviewedBy: { type: DataTypes.UUID, field: 'reviewed_by' },
     reviewedAt: { type: DataTypes.DATE, field: 'reviewed_at' },
     replacesBookingId: { type: DataTypes.UUID, field: 'replaces_booking_id' },
+    // Set by the conflict audit when the booking clashes under the updated
+    // (Week 7) rules. The booking itself is preserved untouched.
+    conflictFlaggedAt: { type: DataTypes.DATE, field: 'conflict_flagged_at' },
+    conflictDetails: { type: DataTypes.JSONB, field: 'conflict_details' },
   },
   {
     sequelize,

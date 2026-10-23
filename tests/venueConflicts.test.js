@@ -9,6 +9,7 @@ const {
   findVenueConflicts,
   findConflictsForVenues,
   findAffectedByUnavailability,
+  auditExistingReservations,
 } = require('../src/utils/venueConflicts');
 
 const NOW = new Date('2026-10-01T00:00:00Z');
@@ -338,5 +339,84 @@ describe('AC — Multiple venues', () => {
   test('hasConflicts is false only when every venue is clear', () => {
     const result = findConflictsForVenues({ venues: [venueA, venueB], start: at('11:00'), end: at('12:00') });
     expect(result.hasConflicts).toBe(false);
+  });
+});
+
+// Week 7 — Extend Venue Conflict Detection: existing reservations are
+// re-checked under the updated rules (pure part of the audit).
+describe('AC — Existing bookings re-checked under the updated rules', () => {
+  // A live venue booking (VenueBooking row) for venue A.
+  function liveBooking(overrides = {}) {
+    return {
+      id: 'vb-1',
+      eventId: 'event-10',
+      venueId: 'venue-A',
+      startDatetime: at('09:00'),
+      endDatetime: at('12:00'),
+      ...overrides,
+    };
+  }
+  const audit = (args) => auditExistingReservations({ venue: venue(), now: NOW, ...args });
+  const byId = (results) => Object.fromEntries(results.map((r) => [r.id, r.conflicts.map((c) => c.type)]));
+
+  test('back-to-back bookings that were fine without buffers conflict once setup/turnaround apply', () => {
+    const bookings = [liveBooking(), liveBooking({ id: 'vb-2', eventId: 'event-11', startDatetime: at('12:00'), endDatetime: at('15:00') })];
+    expect(byId(auditExistingReservations({ venue: venue({ setupMinutes: 0, teardownMinutes: 0 }), bookings, now: NOW })))
+      .toEqual({ 'vb-1': [], 'vb-2': [] });
+    expect(byId(audit({ bookings }))).toEqual({ 'vb-1': ['booking'], 'vb-2': ['booking'] });
+  });
+
+  test('a booking is never in conflict with itself, its own event row or its own holds', () => {
+    const results = audit({
+      bookings: [liveBooking({ eventId: 'event-1' })],
+      events: [booking()], // event-1's direct venue row 10:00-14:00
+      holds: [hold({ eventId: 'event-1' })],
+    });
+    expect(byId(results)).toEqual({ 'vb-1': [], 'event-1': [] });
+    expect(results.map((r) => r.kind).sort()).toEqual(['event', 'venue_booking']);
+  });
+
+  test("an event's other booking at the same venue still counts", () => {
+    const results = audit({
+      bookings: [liveBooking(), liveBooking({ id: 'vb-2', startDatetime: at('12:30'), endDatetime: at('14:00') })],
+    });
+    expect(byId(results)).toEqual({ 'vb-1': ['booking'], 'vb-2': ['booking'] });
+  });
+
+  test('active tentative holds flag a booking; expired or released ones do not', () => {
+    expect(byId(audit({ bookings: [liveBooking()], holds: [hold()] }))['vb-1']).toEqual(['tentative_hold']);
+    expect(byId(audit({ bookings: [liveBooking()], holds: [hold({ expiresAt: NOW })] }))['vb-1']).toEqual([]);
+    expect(byId(audit({ bookings: [liveBooking()], holds: [hold({ status: 'expired' })] }))['vb-1']).toEqual([]);
+  });
+
+  test('temporary unavailability periods and venue status flag affected bookings', () => {
+    expect(byId(audit({ bookings: [liveBooking()], unavailability: [unavailable({ startDatetime: at('12:15'), endDatetime: at('13:00') })] }))['vb-1'])
+      .toEqual(['unavailability']); // inside the 30-min turnaround
+    const closed = auditExistingReservations({ venue: venue({ status: 'blocked' }), bookings: [liveBooking()], now: NOW });
+    expect(closed[0].conflicts.map((c) => c.type)).toEqual(['venue_status']);
+  });
+
+  test('only blocking events on this venue are audited, and finished reservations are skipped', () => {
+    const results = audit({
+      bookings: [liveBooking({ id: 'vb-past', startDatetime: at('09:00', '2026-09-01'), endDatetime: at('10:00', '2026-09-01') })],
+      events: [
+        booking({ id: 'cancelled', status: 'cancelled' }),
+        booking({ id: 'elsewhere', venueId: 'venue-Z' }),
+        booking({ id: 'live' }),
+      ],
+    });
+    expect(results.map((r) => r.id)).toEqual(['live']);
+  });
+
+  test('each venue is audited independently', () => {
+    const results = audit({
+      bookings: [liveBooking(), liveBooking({ id: 'vb-B', eventId: 'event-11', venueId: 'venue-B' })],
+      holds: [hold({ venueId: 'venue-B' })],
+    });
+    expect(byId(results)).toEqual({ 'vb-1': [] });
+  });
+
+  test('defaults to no records and the current clock', () => {
+    expect(auditExistingReservations({ venue: venue() })).toEqual([]);
   });
 });

@@ -45,12 +45,14 @@ async function findOrCreateVenue(attrs) {
 }
 
 describe('Venue Searching and Filtering', () => {
-  let coordinatorToken;
+  let coordinatorToken, venueStaffToken;
   let ballroom, meetingRoom, auditorium, maintenanceHall;
 
   beforeAll(async () => {
     await createInternalUser('search-coordinator@example.com', 'event_coordinator');
+    await createInternalUser('availability-venue-staff@example.com', 'venue_staff');
     coordinatorToken = await loginAs('search-coordinator@example.com');
+    venueStaffToken = await loginAs('availability-venue-staff@example.com');
 
     ballroom = await findOrCreateVenue({
       name: 'Search Test Grand Ballroom',
@@ -88,6 +90,8 @@ describe('Venue Searching and Filtering', () => {
       facilities: ['projector', 'wifi'],
       status: 'maintenance',
     });
+    // Keep the date-based fixture deterministic when this suite is rerun.
+    await auditorium.update({ setupMinutes: 30, teardownMinutes: 30 });
 
     // Book the auditorium 10:00-14:00 so we can test conflict detection.
     // EventRequest itself has no natural unique key to findOrCreate on,
@@ -107,6 +111,51 @@ describe('Venue Searching and Filtering', () => {
         startDatetime: new Date('2026-10-01T10:00:00Z'),
         endDatetime: new Date('2026-10-01T14:00:00Z'),
         status: 'confirmed',
+      },
+    });
+
+    const [tentativeRequest] = await EventRequest.findOrCreate({
+      where: { organiserId: organiser.id, eventName: 'Search Test Tentative Hold Source' },
+      defaults: { organiserId: organiser.id, eventName: 'Search Test Tentative Hold Source', status: 'approved' },
+    });
+    await Event.findOrCreate({
+      where: { eventRequestId: tentativeRequest.id },
+      defaults: {
+        eventRequestId: tentativeRequest.id,
+        venueId: ballroom.id,
+        startDatetime: new Date('2026-10-01T16:00:00Z'),
+        endDatetime: new Date('2026-10-01T17:00:00Z'),
+        status: 'planning',
+      },
+    });
+
+    const [expiredRequest] = await EventRequest.findOrCreate({
+      where: { organiserId: organiser.id, eventName: 'Search Test Expired Hold Source' },
+      defaults: { organiserId: organiser.id, eventName: 'Search Test Expired Hold Source', status: 'approved' },
+    });
+    await Event.findOrCreate({
+      where: { eventRequestId: expiredRequest.id },
+      defaults: {
+        eventRequestId: expiredRequest.id,
+        venueId: meetingRoom.id,
+        startDatetime: new Date('2026-10-01T12:00:00Z'),
+        endDatetime: new Date('2026-10-01T13:00:00Z'),
+        status: 'cancelled',
+      },
+    });
+
+    const [existingTentativeRequest] = await EventRequest.findOrCreate({
+      where: { organiserId: organiser.id, eventName: 'Search Test Existing Timing Conflict Source' },
+      defaults: { organiserId: organiser.id, eventName: 'Search Test Existing Timing Conflict Source', status: 'approved' },
+    });
+    await Event.findOrCreate({
+      where: { eventRequestId: existingTentativeRequest.id },
+      defaults: {
+        eventRequestId: existingTentativeRequest.id,
+        venueId: auditorium.id,
+        startDatetime: new Date('2026-10-01T15:00:00Z'),
+        endDatetime: new Date('2026-10-01T16:00:00Z'),
+        status: 'planning',
       },
     });
   });
@@ -221,9 +270,140 @@ describe('Venue Searching and Filtering', () => {
     // Clear of the buffer entirely.
     const free = await request(app)
       .get(`/api/venues/${auditorium.id}`)
-      .query({ startDateTime: '2026-10-01T15:00:00Z', endDateTime: '2026-10-01T16:00:00Z' })
+      .query({ startDateTime: '2026-10-01T17:00:00Z', endDateTime: '2026-10-01T18:00:00Z' })
       .set('Authorization', `Bearer ${coordinatorToken}`);
     expect(free.body.venue.isAvailable).toBe(true);
+  });
+
+  test('availability calendar filters by venue and date and returns buffered confirmed slots', async () => {
+    const res = await request(app)
+      .get('/api/venues/availability')
+      .query({ venueId: auditorium.id, date: '2026-10-01' })
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ count: 1 });
+    expect(res.body.availability[0].venue.id).toBe(auditorium.id);
+    expect(res.body.availability[0].slots).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        state: 'confirmed_booking',
+        startDateTime: '2026-10-01T09:30:00.000Z',
+        endDateTime: '2026-10-01T14:30:00.000Z',
+        isAvailable: false,
+      }),
+    ]));
+  });
+
+  test('availability calendar exposes every display state and makes only requestable slots available', async () => {
+    const res = await request(app)
+      .get('/api/venues/availability')
+      .query({ venueId: [ballroom.id, meetingRoom.id, auditorium.id, maintenanceHall.id].join(','), date: '2026-10-01' })
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.states).toEqual(expect.arrayContaining([
+      'available',
+      'tentative_hold',
+      'confirmed_booking',
+      'temporarily_unavailable',
+      'expired_hold',
+    ]));
+
+    const slotsFor = (id) => res.body.availability.find((entry) => entry.venue.id === id).slots;
+    const tentative = slotsFor(ballroom.id).find((slot) => slot.state === 'tentative_hold');
+    expect(tentative).toMatchObject({
+      displayState: 'Tentative Hold',
+      startDateTime: '2026-10-01T15:30:00.000Z',
+      endDateTime: '2026-10-01T17:30:00.000Z',
+      isAvailable: false,
+    });
+    expect(slotsFor(ballroom.id).find((slot) => slot.state === 'available')).toMatchObject({ isAvailable: true });
+
+    expect(slotsFor(auditorium.id).find((slot) => slot.state === 'confirmed_booking')).toMatchObject({
+      displayState: 'Confirmed Booking',
+      isAvailable: false,
+    });
+    expect(slotsFor(meetingRoom.id).find((slot) => slot.state === 'expired_hold')).toMatchObject({
+      displayState: 'Expired Hold',
+      isAvailable: true,
+    });
+    expect(slotsFor(maintenanceHall.id)).toEqual([expect.objectContaining({
+      state: 'temporarily_unavailable',
+      displayState: 'Temporarily Unavailable',
+      isAvailable: false,
+    })]);
+  });
+
+  test('availability calendar requires a date or complete explicit range', async () => {
+    const missingRange = await request(app)
+      .get('/api/venues/availability')
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(missingRange.status).toBe(400);
+
+    const incompleteRange = await request(app)
+      .get('/api/venues/availability')
+      .query({ startDateTime: '2026-10-01T10:00:00Z' })
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(incompleteRange.status).toBe(400);
+  });
+
+  test('venue staff can store setup and turnaround times when creating a venue', async () => {
+    const res = await request(app)
+      .post('/api/venues')
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({
+        name: 'Search Test Configured Timing Venue',
+        location: 'Bugis',
+        capacity: 50,
+        setupMinutes: 30,
+        turnaroundMinutes: 45,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.venue).toMatchObject({
+      setupMinutes: 30,
+      teardownMinutes: 45,
+      turnaroundMinutes: 45,
+    });
+  });
+
+  test('only venue staff can configure timing, and conflicting timing aliases are rejected', async () => {
+    const forbidden = await request(app)
+      .patch(`/api/venues/${ballroom.id}`)
+      .set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ setupMinutes: 20, turnaroundMinutes: 40 });
+    expect(forbidden.status).toBe(403);
+
+    const invalid = await request(app)
+      .patch(`/api/venues/${ballroom.id}`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ setupMinutes: -1, turnaroundMinutes: 40 });
+    expect(invalid.status).toBe(400);
+
+    const mismatchedAliases = await request(app)
+      .patch(`/api/venues/${ballroom.id}`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ teardownMinutes: 30, turnaroundMinutes: 45 });
+    expect(mismatchedAliases.status).toBe(400);
+  });
+
+  test('changed turnaround flags existing tentative and confirmed bookings without deleting either', async () => {
+    const eventsBefore = await Event.findAll({ where: { venueId: auditorium.id } });
+    const res = await request(app)
+      .patch(`/api/venues/${auditorium.id}`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ setupMinutes: 30, turnaroundMinutes: 45 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.venue).toMatchObject({ setupMinutes: 30, teardownMinutes: 45, turnaroundMinutes: 45 });
+    expect(res.body.hasConflicts).toBe(true);
+    const blockingEventIds = eventsBefore
+      .filter((event) => ['confirmed', 'planning'].includes(event.status))
+      .map((event) => event.id);
+    expect(res.body.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventIds: expect.arrayContaining(blockingEventIds) }),
+    ]));
+    expect(await Event.count({ where: { venueId: auditorium.id } })).toBe(eventsBefore.length);
   });
 
   test('AC3: results include key venue details (location, capacity, availability, facilities)', async () => {

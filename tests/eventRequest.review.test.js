@@ -300,6 +300,53 @@ describe('Event Review and Approval', () => {
     );
   });
 
+  test('venue staff must give a non-blank reason when rejecting a booking request', async () => {
+    const eventRequest = await createSubmittedRequest(organiserA, {
+      eventName: 'Reason required for venue rejection',
+    });
+
+    const res = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/status`)
+      .set('Authorization', `Bearer ${venueStaffToken}`)
+      .send({ status: 'rejected', reviewReason: '   ' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/reviewReason is required/);
+  });
+
+  test('a final decision cannot be overwritten by a later review request', async () => {
+    const eventRequest = await createSubmittedRequest(organiserA, {
+      eventName: 'Final decision is immutable',
+      assignedCoordinatorId: coordinator.id,
+    });
+
+    const firstDecision = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/status`)
+      .set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ status: 'approved' });
+    expect(firstDecision.status).toBe(200);
+
+    const laterDecision = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/status`)
+      .set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ status: 'rejected', reviewReason: 'Too late to change.' });
+
+    expect(laterDecision.status).toBe(409);
+    expect(laterDecision.body.error).toMatch(/submitted or under review/i);
+  });
+
+  test('only venue staff can access booking queues', async () => {
+    const organiserRes = await request(app)
+      .get('/api/event-requests/booking-requests/pending')
+      .set('Authorization', `Bearer ${organiserAToken}`);
+    const coordinatorRes = await request(app)
+      .get('/api/event-requests/booking-requests/history')
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+
+    expect(organiserRes.status).toBe(403);
+    expect(coordinatorRes.status).toBe(403);
+  });
+
   test('coordinator can fetch a submitted request and see its review details', async () => {
     const eventRequest = await createSubmittedRequest(organiserA, {
       eventName: 'Detailed coordinator review',
