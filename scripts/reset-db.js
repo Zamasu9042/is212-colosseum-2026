@@ -9,6 +9,12 @@ const { Client } = require('pg');
 const { execSync } = require('child_process');
 
 const TABLES = [
+  'notifications',
+  'venue_bookings',
+  'venue_holds',
+  'venue_unavailability',
+  'agenda_items',
+  'event_programmes',
   'events',
   'event_requests',
   'equipment',

@@ -1,5 +1,6 @@
 const express = require('express');
 const { Op } = require('sequelize');
+
 const { body, query } = require('express-validator');
 const { Venue, Event } = require('../models');
 const { authenticate } = require('../middleware/auth');
@@ -11,6 +12,11 @@ const {
   findReservationConflicts,
   AVAILABILITY_STATES,
 } = require('../utils/venueAvailability');
+const { loadVenueSchedules } = require('../services/venueConflictService');
+const {
+  SCHEDULE_AFFECTING_VENUE_FIELDS,
+  auditVenueConflicts,
+} = require('../services/bookingConflictAudit');
 
 const router = express.Router();
 
@@ -65,6 +71,9 @@ function parseDateRange(reqQuery) {
 // Calendar requests can target a whole UTC calendar date, or an explicit
 // range. A date is intentionally kept separate from search's proposed-event
 // range because this endpoint returns *all* slots in the requested period.
+// Calendar requests can target a whole UTC calendar date, or an explicit
+// range. A date is intentionally kept separate from search's proposed-event
+// range because this endpoint returns all slots in the requested period.
 function parseAvailabilityRange(reqQuery) {
   if (reqQuery.date) {
     if (reqQuery.startDateTime || reqQuery.endDateTime) {
@@ -77,7 +86,7 @@ function parseAvailabilityRange(reqQuery) {
   return parseDateRange(reqQuery);
 }
 
-/** Groups Event rows by venueId for O(1) lookup while computing availability. */
+/** Groups Event rows by venueId for the calendar endpoint. */
 function groupEventsByVenue(events) {
   return events.reduce((acc, event) => {
     if (!acc[event.venueId]) acc[event.venueId] = [];
@@ -86,12 +95,40 @@ function groupEventsByVenue(events) {
   }, {});
 }
 
-function serializeVenue(venue, queryStart, queryEnd, eventsForVenue) {
-  const { isAvailable, conflictingEvents } = computeAvailability(
+/** Groups events, holds, or unavailability rows by venueId. */
+function groupByVenue(rows) {
+  return rows.reduce((acc, row) => {
+    if (!acc[row.venueId]) acc[row.venueId] = [];
+    acc[row.venueId].push(row);
+    return acc;
+  }, {});
+}
+
+/**
+ * Loads everything that can occupy these venues (blocking bookings, active
+ * tentative holds, unavailability periods) and indexes it by venue.
+ */
+async function loadSchedulesByVenue(venueIds) {
+  const { events, holds, unavailability } = await loadVenueSchedules(venueIds);
+  return {
+    events: groupByVenue(events),
+    holds: groupByVenue(holds),
+    unavailability: groupByVenue(unavailability),
+  };
+}
+
+function serializeVenue(
+  venue,
+  queryStart,
+  queryEnd,
+  schedules = { events: {}, holds: {}, unavailability: {} }
+) {
+  const { isAvailable, conflicts } = computeAvailability(
     venue,
-    eventsForVenue,
+    schedules.events[venue.id],
     queryStart,
-    queryEnd
+    queryEnd,
+    { holds: schedules.holds[venue.id], unavailability: schedules.unavailability[venue.id] }
   );
   return {
     ...venue.toJSON(),
@@ -99,7 +136,8 @@ function serializeVenue(venue, queryStart, queryEnd, eventsForVenue) {
     // compatibility. Expose the user-story term as well for staff clients.
     turnaroundMinutes: venue.teardownMinutes,
     isAvailable,
-    conflictingEventCount: conflictingEvents.length,
+    conflictingEventCount: conflicts.filter((c) => c.type === 'booking').length,
+    conflictCount: conflicts.length,
   };
 }
 
@@ -141,7 +179,8 @@ function normalizeVenueTiming(payload) {
 //   availability  - "available" | "unavailable"
 //   startDateTime / endDateTime - proposed event window (ISO8601, both-or-neither);
 //                   when given, availability additionally checks for conflicting
-//                   bookings (factoring in each venue's setup/teardown time)
+//                   bookings, active tentative holds and unavailability periods
+//                   (factoring in each venue's setup/teardown time)
 //   sortBy        - "name" | "location" | "capacity" | "availability" (default "name")
 //   sortOrder     - "asc" | "desc" (default "asc")
 // ---------------------------------------------------------------------
@@ -204,17 +243,9 @@ router.get('/', authenticate, venueSearchValidators, validateRequest, async (req
       order: dbOrder,
     });
 
-    let eventsByVenue = {};
-    if (venues.length) {
-      const events = await Event.findAll({
-        where: { venueId: { [Op.in]: venues.map((v) => v.id) } },
-      });
-      eventsByVenue = groupEventsByVenue(events);
-    }
+    const schedules = await loadSchedulesByVenue(venues.map((v) => v.id));
 
-    let results = venues.map((venue) =>
-      serializeVenue(venue, queryStart, queryEnd, eventsByVenue[venue.id])
-    );
+    let results = venues.map((venue) => serializeVenue(venue, queryStart, queryEnd, schedules));
 
     if (availability === 'available') results = results.filter((v) => v.isAvailable);
     if (availability === 'unavailable') results = results.filter((v) => !v.isAvailable);
@@ -314,8 +345,8 @@ router.get('/:id', authenticate, dateRangeValidators, validateRequest, async (re
       return res.status(rangeErr.status).json({ error: rangeErr.message });
     }
 
-    const events = await Event.findAll({ where: { venueId: venue.id } });
-    res.json({ venue: serializeVenue(venue, queryStart, queryEnd, events) });
+    const schedules = await loadSchedulesByVenue([venue.id]);
+    res.json({ venue: serializeVenue(venue, queryStart, queryEnd, schedules) });
   } catch (err) {
     next(err);
   }
@@ -332,18 +363,48 @@ router.post('/', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), venueTimingVal
   }
 });
 
-router.patch('/:id', authenticate, authorize(ROLE_NAMES.VENUE_STAFF), venueTimingValidators, validateRequest, async (req, res, next) => {
-  try {
-    const venue = await Venue.findByPk(req.params.id);
-    if (!venue) return res.status(404).json({ error: 'Venue not found.' });
-    await venue.update(normalizeVenueTiming(req.body));
-    const events = await Event.findAll({ where: { venueId: venue.id } });
-    const conflicts = findReservationConflicts(venue, events);
-    res.json({ venue: serializeVenue(venue), conflicts, hasConflicts: conflicts.length > 0 });
-  } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
-    next(err);
+// Changing setup/turnaround minutes or the venue status can make existing
+// bookings conflict under the updated rules. Existing reservations are
+// flagged for review; they are never deleted or cancelled automatically.
+router.patch(
+  '/:id',
+  authenticate,
+  authorize(ROLE_NAMES.VENUE_STAFF),
+  venueTimingValidators,
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const venue = await Venue.findByPk(req.params.id);
+      if (!venue) return res.status(404).json({ error: 'Venue not found.' });
+
+      const before = Object.fromEntries(
+        SCHEDULE_AFFECTING_VENUE_FIELDS.map((field) => [field, venue[field]])
+      );
+
+      await venue.update(normalizeVenueTiming(req.body));
+
+      const scheduleChanged = SCHEDULE_AFFECTING_VENUE_FIELDS.some(
+        (field) => venue[field] !== before[field]
+      );
+
+      const events = await Event.findAll({ where: { venueId: venue.id } });
+      const conflicts = findReservationConflicts(venue, events);
+
+      const conflictAudit = scheduleChanged
+        ? await auditVenueConflicts({ venueIds: [venue.id] })
+        : undefined;
+
+      return res.json({
+        venue: serializeVenue(venue),
+        conflicts,
+        hasConflicts: conflicts.length > 0,
+        ...(conflictAudit ? { conflictAudit } : {}),
+      });
+    } catch (err) {
+      if (err.status) return res.status(err.status).json({ error: err.message });
+      next(err);
+    }
   }
-});
+);
 
 module.exports = router;

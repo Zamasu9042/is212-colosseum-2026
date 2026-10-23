@@ -45,11 +45,19 @@ async function createApprovedEvent(organiser, coordinator, overrides = {}) {
     organiserId: organiser.id,
     organisationId: organiser.organisationId,
     eventName: 'Programme Test Event',
+    description: 'Programme test request',
+    purpose: 'Testing event programme workflows',
     preferredStart: new Date('2026-11-01T01:00:00.000Z'),
     preferredEnd: new Date('2026-11-01T09:00:00.000Z'),
     expectedAttendance: 80,
+    venueRequirements: 'Auditorium seating',
+    accessibilityRequirements: 'Wheelchair access',
+    equipmentRequirements: 'Projector and microphones',
+    layout: 'Theatre seating',
+    registrationSetup: 'QR-code registration desk',
     status: 'approved',
     submittedAt: new Date(),
+    assignedCoordinatorId: coordinator.id,
   });
 
   const event = await Event.create({

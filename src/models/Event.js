@@ -28,6 +28,10 @@ Event.init(
     },
     confirmedAt: { type: DataTypes.DATE, field: 'confirmed_at' },
     cancelledAt: { type: DataTypes.DATE, field: 'cancelled_at' },
+    // Set by the venue conflict audit when this event's direct venue
+    // (venueId) clashes under the updated rules. Nothing else is changed.
+    venueConflictFlaggedAt: { type: DataTypes.DATE, field: 'venue_conflict_flagged_at' },
+    venueConflictDetails: { type: DataTypes.JSONB, field: 'venue_conflict_details' },
   },
   {
     sequelize,

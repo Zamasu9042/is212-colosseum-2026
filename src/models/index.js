@@ -9,6 +9,10 @@ const EventRequest = require('./EventRequest');
 const Event = require('./Event');
 const EventProgramme = require('./EventProgramme');
 const AgendaItem = require('./AgendaItem');
+const VenueHold = require('./VenueHold');
+const VenueUnavailability = require('./VenueUnavailability');
+const VenueBooking = require('./VenueBooking');
+const Notification = require('./Notification');
 
 // --- Associations ---
 
@@ -27,6 +31,10 @@ RefreshToken.belongsTo(User, { foreignKey: 'userId' });
 // User (organiser) <-> EventRequest
 User.hasMany(EventRequest, { foreignKey: 'organiserId', as: 'submittedRequests' });
 EventRequest.belongsTo(User, { foreignKey: 'organiserId', as: 'organiser' });
+
+// User (assigned coordinator) <-> EventRequest
+User.hasMany(EventRequest, { foreignKey: 'assignedCoordinatorId', as: 'assignedEventRequests' });
+EventRequest.belongsTo(User, { foreignKey: 'assignedCoordinatorId', as: 'assignedCoordinator' });
 
 // ClientOrganisation <-> EventRequest
 ClientOrganisation.hasMany(EventRequest, { foreignKey: 'organisationId' });
@@ -56,6 +64,40 @@ EventProgramme.hasMany(AgendaItem, {
 });
 AgendaItem.belongsTo(EventProgramme, { foreignKey: 'programmeId' });
 
+// Venue <-> VenueUnavailability (time-bound blocks)
+Venue.hasMany(VenueUnavailability, { foreignKey: 'venueId', as: 'unavailabilityPeriods' });
+VenueUnavailability.belongsTo(Venue, { foreignKey: 'venueId' });
+
+// Venue <-> VenueHold (tentative holds), optionally tied to an Event
+Venue.hasMany(VenueHold, { foreignKey: 'venueId', as: 'holds' });
+VenueHold.belongsTo(Venue, { foreignKey: 'venueId' });
+Event.hasMany(VenueHold, { foreignKey: 'eventId', as: 'venueHolds' });
+VenueHold.belongsTo(Event, { foreignKey: 'eventId' });
+
+// Event <-> VenueBooking (1:many — an event may book several venues)
+Event.hasMany(VenueBooking, { foreignKey: 'eventId', as: 'venueBookings' });
+VenueBooking.belongsTo(Event, { foreignKey: 'eventId' });
+
+// Venue <-> VenueBooking
+Venue.hasMany(VenueBooking, { foreignKey: 'venueId' });
+VenueBooking.belongsTo(Venue, { foreignKey: 'venueId' });
+
+// User <-> VenueBooking (requester / reviewer)
+User.hasMany(VenueBooking, { foreignKey: 'requestedBy' });
+VenueBooking.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester' });
+VenueBooking.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
+
+// User <-> Notification
+User.hasMany(Notification, { foreignKey: 'userId' });
+Notification.belongsTo(User, { foreignKey: 'userId' });
+
+// VenueHold <-> Notification (hold expiry reminders / expiry notices)
+VenueHold.hasMany(Notification, { foreignKey: 'venueHoldId' });
+Notification.belongsTo(VenueHold, { foreignKey: 'venueHoldId' });
+
+// User (holder) <-> VenueHold
+VenueHold.belongsTo(User, { foreignKey: 'heldBy', as: 'holder' });
+
 module.exports = {
   sequelize,
   Role,
@@ -69,4 +111,8 @@ module.exports = {
   Event,
   EventProgramme,
   AgendaItem,
+  VenueHold,
+  VenueUnavailability,
+  VenueBooking,
+  Notification,
 };

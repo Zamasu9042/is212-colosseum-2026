@@ -91,14 +91,38 @@ describe('computeAvailability', () => {
     expect(result.isAvailable).toBe(false);
   });
 
-  test('a proposed window right up to (but not into) the setup buffer does not conflict', () => {
+  test("a proposed window whose own teardown runs into the existing booking's setup conflicts", () => {
+    // Proposed 09:00-09:30 + 30 min teardown -> occupies until 10:00,
+    // which overlaps the existing booking's setup from 09:30.
     const result = computeAvailability(
       venue(),
       [event()],
       new Date('2026-10-01T09:00:00Z'),
       new Date('2026-10-01T09:30:00Z')
     );
+    expect(result.isAvailable).toBe(false);
+  });
+
+  test("a proposed window whose teardown ends exactly as the existing setup begins does not conflict", () => {
+    // Proposed 08:30-09:00 + 30 min teardown -> occupied until 09:30,
+    // exactly when the existing booking's setup begins.
+    const result = computeAvailability(
+      venue(),
+      [event()],
+      new Date('2026-10-01T08:30:00Z'),
+      new Date('2026-10-01T09:00:00Z')
+    );
     expect(result.isAvailable).toBe(true);
+  });
+
+  test('an active tentative hold or unavailability period passed in makes the venue unavailable', () => {
+    const qs = new Date('2026-10-02T10:00:00Z');
+    const qe = new Date('2026-10-02T11:00:00Z');
+    const hold = { venueId: 'venue-1', status: 'active', startDatetime: qs, endDatetime: qe };
+    const period = { venueId: 'venue-1', startDatetime: qs, endDatetime: qe, reason: 'Maintenance' };
+
+    expect(computeAvailability(venue(), [], qs, qe, { holds: [hold] }).isAvailable).toBe(false);
+    expect(computeAvailability(venue(), [], qs, qe, { unavailability: [period] }).isAvailable).toBe(false);
   });
 
   test('a cancelled booking never blocks the venue', () => {

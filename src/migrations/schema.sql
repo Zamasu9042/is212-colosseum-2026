@@ -166,11 +166,14 @@ CREATE TABLE IF NOT EXISTS event_requests (
     facility_requirements       TEXT,
     setup_requirements          TEXT,
     equipment_requirements      TEXT,
+    layout                      TEXT,
+    registration_setup          TEXT,
     registration_required       BOOLEAN NOT NULL DEFAULT false,
     status                      VARCHAR(20) NOT NULL DEFAULT 'draft'
                                     CHECK (status IN
                                         ('draft','submitted','under_review','approved','rejected','returned')),
     submitted_at                TIMESTAMPTZ,
+    assigned_coordinator_id     UUID REFERENCES users(id),
     review_reason               TEXT,
     reviewed_at                 TIMESTAMPTZ,
     reviewed_by                 UUID REFERENCES users(id),
@@ -181,6 +184,13 @@ CREATE TABLE IF NOT EXISTS event_requests (
 CREATE INDEX IF NOT EXISTS idx_event_requests_organiser_id ON event_requests(organiser_id);
 CREATE INDEX IF NOT EXISTS idx_event_requests_status ON event_requests(status);
 
+-- Added alongside "Submit Event Request with Mandatory Fields". These are
+-- idempotent so existing dev/test databases can be brought forward without a
+-- full reset.
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS layout TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS registration_setup TEXT;
+ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS assigned_coordinator_id UUID REFERENCES users(id);
+CREATE INDEX IF NOT EXISTS idx_event_requests_assigned_coordinator_id ON event_requests(assigned_coordinator_id);
 -- Keep existing development databases compatible when this feature is added
 -- after the original event_requests table was created.
 ALTER TABLE event_requests ADD COLUMN IF NOT EXISTS requested_layout VARCHAR(100);
@@ -257,6 +267,148 @@ CREATE INDEX IF NOT EXISTS idx_agenda_items_programme_id ON agenda_items(program
 CREATE INDEX IF NOT EXISTS idx_agenda_items_start_time ON agenda_items(start_time);
 
 -- ---------------------------------------------------------------------
+-- VENUE UNAVAILABILITY PERIODS
+-- Time-bound blocks recorded by Venue Staff (maintenance, renovation,
+-- safety issues, internal activities...). Unlike venues.status, which
+-- marks a venue out of service indefinitely, these cover a specific
+-- window and are considered by venue schedule conflict detection.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_unavailability (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    venue_id        UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+    start_datetime  TIMESTAMPTZ NOT NULL,
+    end_datetime    TIMESTAMPTZ NOT NULL,
+    reason          VARCHAR(500) NOT NULL,
+    -- Category of the reason (Mark Venue Temporarily Unavailable AC2);
+    -- `reason` above holds the free-text detail.
+    reason_category VARCHAR(30) NOT NULL DEFAULT 'other'
+                        CHECK (reason_category IN
+                            ('maintenance','equipment_failure','renovation','safety_concern','other')),
+    created_by      UUID REFERENCES users(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_unavailability_venue_window
+    ON venue_unavailability(venue_id, start_datetime, end_datetime);
+
+-- ---------------------------------------------------------------------
+-- VENUE HOLDS (tentative holds)
+-- A temporary claim on a venue while an event is still being finalised.
+--
+-- Week 7 — Manage Expiring Tentative Venue Holds:
+-- - Every hold MUST have an expiry (expires_at NOT NULL, AC1).
+-- - A hold only blocks the venue while it is ACTIVE:
+--   status = 'active' AND expires_at > now() (AC2). Conflict detection
+--   applies that rule at read time, so a slot is released the moment the
+--   deadline passes, even before the background sweep runs (AC4).
+-- - The sweep (src/services/holdExpiryService.js) then moves the row to
+--   status 'expired', stamps expired_at and notifies the coordinator
+--   (AC3, AC6). 'expired' is distinct from 'converted', so an expired hold
+--   can never be mistaken for a confirmed booking (AC5).
+-- - expiry_warning_sent_at records the "expiring soon" reminder so it is
+--   only sent once (AC6).
+-- event_id is optional: a coordinator may hold a slot before the
+-- Event row exists.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_holds (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    venue_id                UUID NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+    event_id                UUID REFERENCES events(id) ON DELETE SET NULL,
+    held_by                 UUID REFERENCES users(id),
+    start_datetime          TIMESTAMPTZ NOT NULL,
+    end_datetime            TIMESTAMPTZ NOT NULL,
+    expires_at              TIMESTAMPTZ NOT NULL,
+    status                  VARCHAR(20) NOT NULL DEFAULT 'active',
+    expiry_warning_sent_at  TIMESTAMPTZ,
+    expired_at              TIMESTAMPTZ,
+    notes                   TEXT,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_holds_venue_status ON venue_holds(venue_id, status);
+CREATE INDEX IF NOT EXISTS idx_venue_holds_event_id ON venue_holds(event_id);
+
+-- Bring databases created before Week 7 forward (idempotent).
+ALTER TABLE venue_holds ADD COLUMN IF NOT EXISTS expiry_warning_sent_at TIMESTAMPTZ;
+ALTER TABLE venue_holds ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+-- Legacy holds without an expiry get the default 72-hour window from when
+-- they were placed (capped at the held slot's start), then expires_at
+-- becomes mandatory.
+UPDATE venue_holds
+   SET expires_at = LEAST(created_at + INTERVAL '72 hours', start_datetime)
+ WHERE expires_at IS NULL;
+ALTER TABLE venue_holds ALTER COLUMN expires_at SET NOT NULL;
+ALTER TABLE venue_holds DROP CONSTRAINT IF EXISTS venue_holds_status_check;
+ALTER TABLE venue_holds ADD CONSTRAINT venue_holds_status_check
+    CHECK (status IN ('active','released','converted','expired'));
+CREATE INDEX IF NOT EXISTS idx_venue_holds_status_expires ON venue_holds(status, expires_at);
+
+-- ---------------------------------------------------------------------
+-- VENUE BOOKINGS
+-- One row per venue requested for an event. An event may have many
+-- (multi-venue events); every row keeps its own event_id so all of an
+-- event's bookings stay linked, and each is approved/rejected/cancelled
+-- on its own without touching the others.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_bookings (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id              UUID NOT NULL REFERENCES events(id),
+    venue_id              UUID NOT NULL REFERENCES venues(id),
+    requested_by          UUID NOT NULL REFERENCES users(id),
+    start_datetime        TIMESTAMPTZ NOT NULL,
+    end_datetime          TIMESTAMPTZ NOT NULL,
+    expected_attendance   INTEGER NOT NULL CHECK (expected_attendance > 0),
+    requirements          TEXT,
+    status                VARCHAR(30) NOT NULL DEFAULT 'pending'
+                              CHECK (status IN
+                                  ('pending','approved','rejected','cancelled','needs_replacement','replaced')),
+    review_reason         TEXT,
+    reviewed_by           UUID REFERENCES users(id),
+    reviewed_at           TIMESTAMPTZ,
+    replaces_booking_id   UUID REFERENCES venue_bookings(id),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_event_id ON venue_bookings(event_id);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_venue_id ON venue_bookings(venue_id);
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_status ON venue_bookings(status);
+
+-- Week 7 — Extend Venue Conflict Detection: an existing booking that
+-- becomes conflicting under the updated rules (setup/turnaround, active
+-- holds, unavailability periods) is FLAGGED, never deleted and never has
+-- its status/times changed. conflict_details holds the typed conflicts
+-- found by the last audit (see src/services/bookingConflictAudit.js).
+ALTER TABLE venue_bookings ADD COLUMN IF NOT EXISTS conflict_flagged_at TIMESTAMPTZ;
+ALTER TABLE venue_bookings ADD COLUMN IF NOT EXISTS conflict_details JSONB;
+CREATE INDEX IF NOT EXISTS idx_venue_bookings_conflict_flagged
+    ON venue_bookings(conflict_flagged_at) WHERE conflict_flagged_at IS NOT NULL;
+
+-- Same flag for events that reference a venue directly (events.venue_id).
+ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_conflict_flagged_at TIMESTAMPTZ;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_conflict_details JSONB;
+
+-- ---------------------------------------------------------------------
+-- NOTIFICATIONS (in-app)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type              VARCHAR(50) NOT NULL,
+    message           TEXT NOT NULL,
+    event_id          UUID REFERENCES events(id),
+    venue_booking_id  UUID REFERENCES venue_bookings(id),
+    venue_hold_id     UUID REFERENCES venue_holds(id) ON DELETE SET NULL,
+    read_at           TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+-- Week 7: hold expiry reminders/expiry notices link back to the hold.
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS venue_hold_id UUID REFERENCES venue_holds(id) ON DELETE SET NULL;
+
+-- ---------------------------------------------------------------------
 -- Trigger to auto-maintain updated_at columns
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -271,7 +423,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;

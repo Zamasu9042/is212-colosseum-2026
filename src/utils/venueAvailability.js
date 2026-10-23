@@ -1,17 +1,18 @@
 // Shared helper for determining whether a venue is available, either in
-// general (its own status) or for a specific proposed date/time window
-// (its status AND no conflicting booking, once setup/teardown turnaround
-// time is taken into account).
+// general (its own status) or for a specific proposed date/time window.
 //
-// Kept separate from the route handlers so the conflict-detection logic
-// has a single definition and can be unit tested without spinning up the
-// whole HTTP stack.
+// The actual conflict rules (setup/turnaround buffers, tentative holds,
+// unavailability periods) live in ./venueConflicts.js so that venue search
+// and venue schedule conflict identification share ONE definition of
+// "this venue is occupied". This module is a thin adapter kept for the
+// search/filter routes.
 
-// Event statuses that still hold a real claim on a venue. A cancelled
-// event should NOT continue to occupy the venue (matches the customer
-// briefing's "Cancelled events may continue to occupy venue ... reservations"
-// pain point) — this is deliberately excluded here.
-const BLOCKING_EVENT_STATUSES = ['planning', 'awaiting_arrangements', 'confirmed', 'completed'];
+const {
+  BLOCKING_EVENT_STATUSES,
+  windowsOverlap,
+  getEffectiveWindow,
+  findVenueConflicts,
+} = require('./venueConflicts');
 
 // These are API display states, rather than new database states.  Keeping the
 // mapping here lets the calendar use the existing Event lifecycle without
@@ -66,32 +67,27 @@ function findReservationConflicts(venue, events) {
 }
 
 /**
- * A venue's real occupied window is wider than its published start/end —
- * it also needs `setupMinutes` beforehand and `teardownMinutes` after.
+ * A venue's real occupied window for an event is wider than its published
+ * start/end — it also needs `setupMinutes` beforehand and `teardownMinutes`
+ * after.
  */
 function getOccupiedWindow(event, venue) {
-  const setupMs = (venue.setupMinutes ?? 0) * 60 * 1000;
-  const teardownMs = (venue.teardownMinutes ?? 0) * 60 * 1000;
-  return {
-    start: new Date(new Date(event.startDatetime).getTime() - setupMs),
-    end: new Date(new Date(event.endDatetime).getTime() + teardownMs),
-  };
-}
-
-/** Do two [start, end) windows overlap at all? */
-function windowsOverlap(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && aEnd > bStart;
+  return getEffectiveWindow(event.startDatetime, event.endDatetime, venue);
 }
 
 /**
- * True if `event` (for this venue) conflicts with the proposed
- * [queryStart, queryEnd) window, once the venue's own setup/teardown
- * buffer is applied to the event's occupied time.
+ * True if `event` (for this venue) conflicts with a proposed booking of
+ * [queryStart, queryEnd), once setup/teardown buffers are applied to both
+ * the existing event and the proposed booking.
  */
 function eventConflictsWithWindow(event, venue, queryStart, queryEnd) {
-  if (!BLOCKING_EVENT_STATUSES.includes(event.status)) return false;
-  const occupied = getOccupiedWindow(event, venue);
-  return windowsOverlap(occupied.start, occupied.end, queryStart, queryEnd);
+  return findVenueConflicts({
+    venue,
+    ignoreVenueStatus: true,
+    start: queryStart,
+    end: queryEnd,
+    events: [event],
+  }).hasConflict;
 }
 
 /**
@@ -99,26 +95,37 @@ function eventConflictsWithWindow(event, venue, queryStart, queryEnd) {
  *
  * - With no requested window (queryStart/queryEnd undefined), this is
  *   just the venue's own operational status.
- * - With a requested window, it additionally checks `events` (every
- *   Event row for this venue, any status) for a conflicting booking.
+ * - With a requested window, it additionally checks `events`, plus any
+ *   `holds` / `unavailability` passed in `extra`, for a conflict.
  *
- * Returns { isAvailable, conflictingEvents } so callers can both filter
- * and display *why* a venue was excluded, if useful.
+ * Returns { isAvailable, conflictingEvents, conflicts } — conflictingEvents
+ * is kept for backwards compatibility (Event rows only); conflicts is the
+ * full typed list from venueConflicts.findVenueConflicts.
  */
-function computeAvailability(venue, events, queryStart, queryEnd) {
+function computeAvailability(venue, events, queryStart, queryEnd, extra = {}) {
   if (venue.status !== 'available') {
-    return { isAvailable: false, conflictingEvents: [] };
+    return { isAvailable: false, conflictingEvents: [], conflicts: [] };
   }
 
   if (!queryStart || !queryEnd) {
-    return { isAvailable: true, conflictingEvents: [] };
+    return { isAvailable: true, conflictingEvents: [], conflicts: [] };
   }
+
+  const { conflicts } = findVenueConflicts({
+    venue,
+    start: queryStart,
+    end: queryEnd,
+    events: events || [],
+    holds: extra.holds || [],
+    unavailability: extra.unavailability || [],
+    now: extra.now,
+  });
 
   const conflictingEvents = (events || []).filter((event) =>
     eventConflictsWithWindow(event, venue, queryStart, queryEnd)
   );
 
-  return { isAvailable: conflictingEvents.length === 0, conflictingEvents };
+  return { isAvailable: conflicts.length === 0, conflictingEvents, conflicts };
 }
 
 /**
