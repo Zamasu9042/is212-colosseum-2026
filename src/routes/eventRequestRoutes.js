@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { body, query, param } = require('express-validator');
-const { sequelize, EventRequest, Event, Role, User } = require('../models');
+const { sequelize, EventRequest, Event, Notification, Role, User } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, authorizeOwnerOrRoles, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -424,6 +424,14 @@ router.patch(
 
         await eventRequest.update({ assignedCoordinatorId: coordinator.id }, { transaction });
         if (event) await event.update({ coordinatorId: coordinator.id }, { transaction });
+        await Notification.create(
+          {
+            userId: coordinator.id,
+            type: 'event_coordinator_assigned',
+            message: `You have been assigned to coordinate event request: ${eventRequest.eventName}.`,
+          },
+          { transaction }
+        );
         return { eventRequest, event };
       });
 
