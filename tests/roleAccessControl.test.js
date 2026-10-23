@@ -23,7 +23,7 @@ async function createUser(roleName, label, overrides = {}) {
     defaults: { name: roleName, displayName: roleName },
   });
   return User.create({
-    email: `scrum42-${label}-${suffix}@example.com`,
+    email: `role-access-${label}-${suffix}@example.com`,
     passwordHash: await hashPassword(PASSWORD),
     firstName: 'SCRUM',
     lastName: label,
@@ -42,7 +42,7 @@ const auth = (token) => ({ Authorization: `Bearer ${token}` });
 async function makeEventRequest(organiser, label, overrides = {}) {
   return EventRequest.create({
     organiserId: organiser.id,
-    eventName: `SCRUM-42 ${label} ${suffix}`,
+    eventName: `Role access ${label} ${suffix}`,
     description: 'Event details needed for role permission tests.',
     purpose: 'Role access verification',
     preferredStart: new Date('2027-04-01T09:00:00Z'),
@@ -69,7 +69,7 @@ async function makeEvent(eventRequest, coordinator, status = 'planning') {
   });
 }
 
-describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
+describe('Coordinator assignment and role access control', () => {
   let organiser;
   let leadA;
   let leadB;
@@ -117,7 +117,7 @@ describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
     expect(safetyToken).toBeTruthy();
 
     const selfRegistration = await request(app).post('/api/auth/register').send({
-      email: `scrum42-self-register-${suffix}@example.com`,
+      email: `role-access-self-register-${suffix}@example.com`,
       password: PASSWORD,
       firstName: 'No',
       lastName: 'Access',
@@ -241,6 +241,12 @@ describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
       .send({ coordinatorId: venueStaff.id });
     expect(invalidRole.status).toBe(422);
 
+    const leadAsCoordinator = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+      .set(auth(leadAToken))
+      .send({ coordinatorId: leadA.id });
+    expect(leadAsCoordinator.status).toBe(422);
+
     const inactiveCoordinator = await createUser(ROLE_NAMES.EVENT_COORDINATOR, 'inactive', { isActive: false });
     const inactive = await request(app)
       .patch(`/api/event-requests/${eventRequest.id}/assignment`)
@@ -251,6 +257,36 @@ describe('SCRUM-42 — Event Coordinator Lead and Safety Officer roles', () => {
       where: { type: 'event_coordinator_assigned' },
     })).filter((notification) => notification.message.includes(eventRequest.eventName));
     expect(notifications).toHaveLength(0);
+  });
+
+  test('a Lead cannot coordinate an event, while an assigned Coordinator can manage it', async () => {
+    const eventRequest = await makeEventRequest(organiser, 'lead cannot coordinate');
+    const assignment = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+      .set(auth(leadAToken))
+      .send({ coordinatorId: coordinatorA.id });
+    expect(assignment.status).toBe(200);
+
+    const approvedRequest = await EventRequest.findByPk(eventRequest.id);
+    await approvedRequest.update({ status: 'approved' });
+    const event = await makeEvent(approvedRequest, coordinatorA);
+
+    const [leadProgramme, leadBooking] = await Promise.all([
+      request(app)
+        .post(`/api/events/${event.id}/programme`)
+        .set(auth(leadAToken)),
+      request(app)
+        .post(`/api/events/${event.id}/venue-bookings`)
+        .set(auth(leadAToken))
+        .send({}),
+    ]);
+    expect(leadProgramme.status).toBe(403);
+    expect(leadBooking.status).toBe(403);
+
+    const coordinatorProgramme = await request(app)
+      .post(`/api/events/${event.id}/programme`)
+      .set(auth(coordinatorAToken));
+    expect(coordinatorProgramme.status).toBe(201);
   });
 
   test('Coordinators can review only requests assigned to them', async () => {
