@@ -1,13 +1,10 @@
 // tests/eventRequest.draft.test.js
 //
 // Integration tests against the real app + a test Postgres database.
-// Run `npm run db:reset && npm run db:seed` first (same as any other
-// test run in this repo), with NODE_ENV=test pointing at a disposable
-// database.
 
 const request = require('supertest');
 const app = require('../src/app');
-const { sequelize } = require('../src/models');
+const { sequelize, EventRequest } = require('../src/models');
 
 async function registerAndLogin(email) {
   await request(app).post('/api/auth/register').send({
@@ -147,6 +144,37 @@ describe('Save Event Request as Draft', () => {
 
     expect(updateRes.body.eventRequest.status).toBe('draft');
     expect(updateRes.body.eventRequest.submittedAt).toBeNull();
+  });
+
+  test('an organiser cannot edit another organiser\'s draft', async () => {
+    const createRes = await request(app)
+      .post('/api/event-requests')
+      .set('Authorization', `Bearer ${organiserAToken}`)
+      .send({ eventName: 'Private draft' });
+
+    const res = await request(app)
+      .patch(`/api/event-requests/${createRes.body.eventRequest.id}`)
+      .set('Authorization', `Bearer ${organiserBToken}`)
+      .send({ eventName: 'Attempted takeover' });
+
+    expect(res.status).toBe(403);
+  });
+
+  test('a submitted request cannot be edited through the draft-save endpoint', async () => {
+    const createRes = await request(app)
+      .post('/api/event-requests')
+      .set('Authorization', `Bearer ${organiserAToken}`)
+      .send({ eventName: 'Locked after submission' });
+    const draft = await EventRequest.findByPk(createRes.body.eventRequest.id);
+    await draft.update({ status: 'submitted', submittedAt: new Date() });
+
+    const res = await request(app)
+      .patch(`/api/event-requests/${draft.id}`)
+      .set('Authorization', `Bearer ${organiserAToken}`)
+      .send({ eventName: 'This must not be saved' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/draft status/i);
   });
 
   test('cannot smuggle status/organiserId changes through create or edit', async () => {
