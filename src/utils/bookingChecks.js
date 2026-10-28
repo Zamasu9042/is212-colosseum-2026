@@ -20,7 +20,7 @@ const AVAILABILITY_TYPES = [CONFLICT_TYPES.VENUE_STATUS, CONFLICT_TYPES.UNAVAILA
  * Runs the checks for one proposed booking.
  * @returns {Promise<Array<{check: string, message: string, details?: object[]}>>} empty when OK
  */
-async function runBookingChecks({ venue, event, start, end, attendance, excludeBookingId }) {
+async function runBookingChecks({ venue, event, start, end, attendance, excludeBookingId, transaction }) {
   const failures = [];
 
   if (attendance > venue.capacity) {
@@ -39,6 +39,7 @@ async function runBookingChecks({ venue, event, start, end, attendance, excludeB
     end,
     excludeEventId: event.id,
     excludeBookingId,
+    transaction,
   });
   const conflicts = result.venues[0].conflicts;
 

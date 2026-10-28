@@ -391,6 +391,86 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_conflict_flagged_at TIMESTAMPT
 ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_conflict_details JSONB;
 
 -- ---------------------------------------------------------------------
+-- EQUIPMENT STATUS, REQUESTS & RESERVATIONS (SCRUM-21, SCRUM-22, SCRUM-24)
+--
+-- SCRUM-22 — catalogue status. An item is one of:
+--   available   working, no live reservation
+--   reserved    working, has at least one live (active, not yet ended)
+--               reservation. SYSTEM-MANAGED: set/cleared by the
+--               reservation service, never by a manual status update.
+--   in_repair   being repaired — never selectable, never reservable
+--   unavailable out of service for any other reason — same as in_repair
+-- Legacy values are mapped: maintenance -> in_repair, damaged -> unavailable.
+--
+-- "reserved" is a catalogue-level flag. An item that is reserved for one
+-- time window can still be reserved for a different, non-overlapping
+-- window (SCRUM-24 allocates cleanly by time-slot), so availability for
+-- a specific window is always computed from equipment_reservations.
+-- ---------------------------------------------------------------------
+ALTER TABLE equipment DROP CONSTRAINT IF EXISTS equipment_status_check;
+UPDATE equipment SET status = 'in_repair'   WHERE status = 'maintenance';
+UPDATE equipment SET status = 'unavailable' WHERE status = 'damaged';
+ALTER TABLE equipment ADD CONSTRAINT equipment_status_check
+    CHECK (status IN ('available','reserved','in_repair','unavailable'));
+CREATE INDEX IF NOT EXISTS idx_equipment_status ON equipment(status);
+
+-- SCRUM-24 — what an event needs. One row per requested equipment type
+-- (optionally pinned to one catalogue item). Technical readiness can only
+-- be marked complete once every row is fully allocated by reservations.
+CREATE TABLE IF NOT EXISTS event_equipment_requests (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id                UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    equipment_type          VARCHAR(100) NOT NULL,
+    equipment_id            UUID REFERENCES equipment(id),
+    quantity_requested      INTEGER NOT NULL CHECK (quantity_requested > 0),
+    technical_requirements  TEXT,
+    requested_by            UUID REFERENCES users(id),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_event_equipment_requests_event_id
+    ON event_equipment_requests(event_id);
+
+-- SCRUM-21 — a reservation commits `quantity` units of one catalogue item
+-- to one event for [start_datetime, end_datetime). Overlap is a plain
+-- interval test with NO setup/transit buffer between venues (SCRUM-24).
+-- event_id, equipment_id, organiser_name and reserved_at are the
+-- metadata the story requires on every reservation; organiser_name is a
+-- snapshot so the record stays readable if the organiser account changes.
+CREATE TABLE IF NOT EXISTS equipment_reservations (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id              UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    equipment_id          UUID NOT NULL REFERENCES equipment(id),
+    equipment_request_id  UUID REFERENCES event_equipment_requests(id) ON DELETE SET NULL,
+    quantity              INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    start_datetime        TIMESTAMPTZ NOT NULL,
+    end_datetime          TIMESTAMPTZ NOT NULL,
+    organiser_name        VARCHAR(201),
+    status                VARCHAR(20) NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active','cancelled')),
+    reserved_by           UUID REFERENCES users(id),
+    reserved_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cancelled_by          UUID REFERENCES users(id),
+    cancelled_at          TIMESTAMPTZ,
+    cancellation_reason   TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (end_datetime > start_datetime)
+);
+CREATE INDEX IF NOT EXISTS idx_equipment_reservations_equipment_window
+    ON equipment_reservations(equipment_id, status, start_datetime, end_datetime);
+CREATE INDEX IF NOT EXISTS idx_equipment_reservations_event_id
+    ON equipment_reservations(event_id);
+
+-- SCRUM-24 — technical readiness on the event.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS technical_readiness VARCHAR(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE events DROP CONSTRAINT IF EXISTS events_technical_readiness_check;
+ALTER TABLE events ADD CONSTRAINT events_technical_readiness_check
+    CHECK (technical_readiness IN ('pending','complete'));
+ALTER TABLE events ADD COLUMN IF NOT EXISTS technical_readiness_at TIMESTAMPTZ;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS technical_readiness_by UUID REFERENCES users(id);
+
+-- ---------------------------------------------------------------------
 -- NOTIFICATIONS (in-app)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS notifications (
@@ -423,7 +503,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings','event_equipment_requests','equipment_reservations']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;
