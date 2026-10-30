@@ -427,16 +427,50 @@ router.patch(
           return { error: 'coordinatorId must identify an active Event Coordinator.', status: 422 };
         }
 
+        const previousCoordinatorId = eventRequest.assignedCoordinatorId;
+        const isReassignment = Boolean(
+          previousCoordinatorId && previousCoordinatorId !== coordinator.id
+        );
+
         await eventRequest.update({ assignedCoordinatorId: coordinator.id }, { transaction });
         if (event) await event.update({ coordinatorId: coordinator.id }, { transaction });
-        await Notification.create(
-          {
-            userId: coordinator.id,
-            type: 'event_coordinator_assigned',
-            message: `You have been assigned to coordinate event request: ${eventRequest.eventName}.`,
-          },
-          { transaction }
-        );
+
+        if (isReassignment) {
+          const coordinatorName = [coordinator.firstName, coordinator.lastName].filter(Boolean).join(' ');
+          await Notification.bulkCreate(
+            [
+              {
+                userId: coordinator.id,
+                type: 'event_coordinator_reassigned',
+                eventId: event?.id || null,
+                message: `You have been reassigned to coordinate event: ${eventRequest.eventName}.`,
+              },
+              {
+                userId: previousCoordinatorId,
+                type: 'event_coordinator_reassigned',
+                eventId: event?.id || null,
+                message: `You are no longer assigned to coordinate event: ${eventRequest.eventName}.`,
+              },
+              {
+                userId: eventRequest.organiserId,
+                type: 'event_coordinator_reassigned',
+                eventId: event?.id || null,
+                message: `Your event ${eventRequest.eventName} has been reassigned to ${coordinatorName}.`,
+              },
+            ],
+            { transaction }
+          );
+        } else if (!previousCoordinatorId) {
+          await Notification.create(
+            {
+              userId: coordinator.id,
+              type: 'event_coordinator_assigned',
+              eventId: event?.id || null,
+              message: `You have been assigned to coordinate event request: ${eventRequest.eventName}.`,
+            },
+            { transaction }
+          );
+        }
         return { eventRequest, event };
       });
 
