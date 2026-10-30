@@ -23,6 +23,14 @@ describe('Web GUI hosting', () => {
     expect((await request(app).get('/styles.css')).headers['content-type']).toMatch(/css/);
   });
 
+  test('Lead GUI describes assignment and reassignment without a duplicate workflow', async () => {
+    const appJs = await request(app).get('/app.js');
+    expect(appJs.text).toContain('Assign & reassign coordinators');
+    expect(appJs.text).toContain('Current assignments and active events');
+    expect(appJs.text).toContain('Replacement coordinator');
+    expect(appJs.text).toContain('existing venue and technical arrangements remain with the event');
+  });
+
   test('deep links fall back to index.html', async () => {
     const res = await request(app).get('/some/deep/link');
     expect(res.status).toBe(200);

@@ -619,10 +619,13 @@ route('/assign', async (root) => {
   ]);
   const opts = [['', '— choose coordinator —'], ...coords.users.map((u) => [u.id, fullName(u)])];
   const assignCell = (r) => {
-    const sel = select('coordinatorId', opts, r.assignedCoordinatorId || '');
+    const replacementOpts = r.assignedCoordinatorId
+      ? opts.filter(([id]) => id !== r.assignedCoordinatorId)
+      : opts;
+    const sel = select('coordinatorId', replacementOpts, '');
     return h('div', { class: 'actions' }, sel, h('button', { class: 'small primary', onclick: async () => {
       if (!sel.value) return toast('Choose a coordinator first.', 'error');
-      try { await api(`/event-requests/${r.id}/assignment`, { method: 'PATCH', body: { coordinatorId: sel.value } }); toast('Coordinator assigned.', 'ok'); render(); }
+      try { await api(`/event-requests/${r.id}/assignment`, { method: 'PATCH', body: { coordinatorId: sel.value } }); toast(r.assignedCoordinatorId ? 'Coordinator reassigned.' : 'Coordinator assigned.', 'ok'); render(); }
       catch (err) { toast(err.message, 'error'); }
     } }, r.assignedCoordinatorId ? 'Reassign' : 'Assign'));
   };
@@ -631,10 +634,11 @@ route('/assign', async (root) => {
     { title: 'Organiser', render: (r) => fullName(r.organiser) },
     { title: 'When', render: (r) => fmtRange(r.preferredStart, r.preferredEnd) },
     { title: 'Status', render: (r) => pill(r.status) },
+    { title: 'Current coordinator', render: (r) => r.assignedCoordinator ? fullName(r.assignedCoordinator) : 'Unassigned' },
   ];
-  root.append(pageHead('Assign requests', 'Every Coordinator Lead sees the same queue.'),
-    h('div', { class: 'card', 'data-tour': 'assign-unassigned' }, h('h2', null, `Unassigned (${unassigned.count})`), table([...cols, { title: 'Coordinator', render: assignCell }], unassigned.eventRequests, { empty: 'No unassigned requests.' })),
-    h('div', { class: 'card', 'data-tour': 'assign-current' }, h('h2', null, 'Current assignments'), table([...cols, { title: 'Coordinator', render: (r) => fullName(r.assignedCoordinator) }, { title: 'Reassign', render: assignCell }], assigned.eventRequests, { empty: 'No assignments yet.' })));
+  root.append(pageHead('Assign & reassign coordinators', 'Every Coordinator Lead sees the same queue. Reassignments take effect immediately; existing venue and technical arrangements remain with the event.'),
+    h('div', { class: 'card', 'data-tour': 'assign-unassigned' }, h('h2', null, `Unassigned requests (${unassigned.count})`), table([...cols, { title: 'Assign coordinator', render: assignCell }], unassigned.eventRequests, { empty: 'No unassigned requests.' })),
+    h('div', { class: 'card', 'data-tour': 'assign-current' }, h('h2', null, 'Current assignments and active events'), table([...cols, { title: 'Replacement coordinator', render: assignCell }], assigned.eventRequests, { empty: 'No assignments yet.' })));
 }, { roles: ['event_coordinator_lead'] });
 
 // =====================================================================
