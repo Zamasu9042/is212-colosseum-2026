@@ -32,6 +32,15 @@ Event.init(
     // (venueId) clashes under the updated rules. Nothing else is changed.
     venueConflictFlaggedAt: { type: DataTypes.DATE, field: 'venue_conflict_flagged_at' },
     venueConflictDetails: { type: DataTypes.JSONB, field: 'venue_conflict_details' },
+    // SCRUM-24: only 'complete' once every equipment request is fully allocated.
+    technicalReadiness: {
+      type: DataTypes.STRING(20),
+      defaultValue: 'pending',
+      field: 'technical_readiness',
+      validate: { isIn: [['pending', 'complete']] },
+    },
+    technicalReadinessAt: { type: DataTypes.DATE, field: 'technical_readiness_at' },
+    technicalReadinessBy: { type: DataTypes.UUID, field: 'technical_readiness_by' },
   },
   {
     sequelize,

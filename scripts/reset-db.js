@@ -10,6 +10,8 @@ const { execSync } = require('child_process');
 
 const TABLES = [
   'notifications',
+  'equipment_reservations',
+  'event_equipment_requests',
   'venue_bookings',
   'venue_holds',
   'venue_unavailability',

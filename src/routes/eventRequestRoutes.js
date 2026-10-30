@@ -197,8 +197,13 @@ router.get(
   authorize(ROLE_NAMES.EVENT_ORGANISER),
   async (req, res, next) => {
     try {
+      // ?scope=all returns every request the organiser owns (used by the
+      // web UI to show submitted/approved requests too). Default stays
+      // drafts-only for backwards compatibility.
+      const where = { organiserId: req.user.id };
+      if (req.query.scope !== 'all') where.status = 'draft';
       const drafts = await EventRequest.findAll({
-        where: { organiserId: req.user.id, status: 'draft' },
+        where,
         // NOTE: this model's createdAt/updatedAt options were passed as
         // strings ('created_at' / 'updated_at'), which renames the actual
         // Sequelize attribute to that string, not just the column — so
@@ -537,7 +542,27 @@ router.patch(
         reviewedAt: new Date(),
         reviewedBy: req.user.id,
       });
-      res.json({ eventRequest: request });
+
+      // An approved request becomes an Event (schema.sql: "Created once an
+      // EventRequest is approved and a Coordinator assigned"). Downstream
+      // planning — venue bookings, equipment reservations (SCRUM-21) —
+      // hangs off that Event. Idempotent via findOrCreate.
+      // Applies to both approval paths: a Coordinator approving after review,
+      // or Venue Staff accepting the booking request.
+      let event = null;
+      if (status === 'approved' && request.preferredStart && request.preferredEnd) {
+        [event] = await Event.findOrCreate({
+          where: { eventRequestId: request.id },
+          defaults: {
+            eventRequestId: request.id,
+            coordinatorId: request.assignedCoordinatorId,
+            startDatetime: request.preferredStart,
+            endDatetime: request.preferredEnd,
+            status: 'planning',
+          },
+        });
+      }
+      res.json({ eventRequest: request, ...(event ? { event } : {}) });
     } catch (err) {
       next(err);
     }

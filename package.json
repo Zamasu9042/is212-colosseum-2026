@@ -9,6 +9,8 @@
     "db:init": "node scripts/init-db.js",
     "db:seed": "node scripts/seed-roles.js",
     "db:reset": "node scripts/reset-db.js",
+    "db:demo": "node scripts/seed-demo.js",
+    "setup": "npm run db:init && npm run db:seed && npm run db:demo",
     "test": "jest --runInBand"
   },
   "dependencies": {

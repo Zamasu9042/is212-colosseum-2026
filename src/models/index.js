@@ -13,6 +13,8 @@ const VenueHold = require('./VenueHold');
 const VenueUnavailability = require('./VenueUnavailability');
 const VenueBooking = require('./VenueBooking');
 const Notification = require('./Notification');
+const EquipmentReservation = require('./EquipmentReservation');
+const EventEquipmentRequest = require('./EventEquipmentRequest');
 
 // --- Associations ---
 
@@ -98,6 +100,20 @@ Notification.belongsTo(VenueHold, { foreignKey: 'venueHoldId' });
 // User (holder) <-> VenueHold
 VenueHold.belongsTo(User, { foreignKey: 'heldBy', as: 'holder' });
 
+// --- Equipment (SCRUM-21 / SCRUM-24) ---
+Event.hasMany(EquipmentReservation, { foreignKey: 'eventId', as: 'equipmentReservations' });
+EquipmentReservation.belongsTo(Event, { foreignKey: 'eventId' });
+Equipment.hasMany(EquipmentReservation, { foreignKey: 'equipmentId', as: 'reservations' });
+EquipmentReservation.belongsTo(Equipment, { foreignKey: 'equipmentId' });
+EquipmentReservation.belongsTo(User, { foreignKey: 'reservedBy', as: 'reserver' });
+EquipmentReservation.belongsTo(User, { foreignKey: 'cancelledBy', as: 'canceller' });
+
+Event.hasMany(EventEquipmentRequest, { foreignKey: 'eventId', as: 'equipmentRequests' });
+EventEquipmentRequest.belongsTo(Event, { foreignKey: 'eventId' });
+EventEquipmentRequest.belongsTo(Equipment, { foreignKey: 'equipmentId' });
+EventEquipmentRequest.hasMany(EquipmentReservation, { foreignKey: 'equipmentRequestId', as: 'reservations' });
+EquipmentReservation.belongsTo(EventEquipmentRequest, { foreignKey: 'equipmentRequestId', as: 'equipmentRequest' });
+
 module.exports = {
   sequelize,
   Role,
@@ -115,4 +131,6 @@ module.exports = {
   VenueUnavailability,
   VenueBooking,
   Notification,
+  EquipmentReservation,
+  EventEquipmentRequest,
 };

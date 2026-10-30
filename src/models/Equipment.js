@@ -22,9 +22,12 @@ Equipment.init(
       field: 'quantity_available',
     },
     location: { type: DataTypes.STRING(255) },
+    // SCRUM-22. 'reserved' is system-managed by the reservation service;
+    // see EQUIPMENT_STATUSES in src/utils/equipmentAvailability.js.
     status: {
-      type: DataTypes.ENUM('available', 'maintenance', 'damaged'),
+      type: DataTypes.STRING(20),
       defaultValue: 'available',
+      validate: { isIn: [['available', 'reserved', 'in_repair', 'unavailable']] },
     },
   },
   {

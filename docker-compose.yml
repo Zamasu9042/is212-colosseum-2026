@@ -1,0 +1,22 @@
+# Optional: a local PostgreSQL for ConnectSphere, matching .env.example.
+#   docker compose up -d        # start the database
+#   npm run setup               # schema + roles + demo data
+#   npm start                   # then open http://localhost:4000
+services:
+  db:
+    image: postgres:16
+    container_name: connectsphere-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: connectsphere
+    ports:
+      - "5432:5432"
+    volumes:
+      - connectsphere-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+volumes:
+  connectsphere-data:
