@@ -13,7 +13,7 @@ npm install
 cp .env.example .env          # defaults match the Docker database below
 docker compose up -d          # or use your own PostgreSQL (see step 2)
 npm run setup                 # schema + roles + demo data
-npm start
+npm run dev                   # starts the GUI/API with auto-reload
 ```
 
 Open **http://localhost:4000** and sign in. The login page has one-click
@@ -443,19 +443,56 @@ Each fix has a regression test named after its bug id.
 | BUG-6 | Lowering units in service below what's already reserved over-committed the item | **409** when the new value is below the peak concurrent reserved quantity | same |
 | BUG-7 | A request accepted by Venue Staff never became an Event | Both approval paths create the Event | same |
 
-### 7. Run the tests
+### 7. Testing
 
-To test SCRUM-21, SCRUM-22 and SCRUM-24, check separately uploaded scrumtestguide.md file. It has the automated commands per story and step-by-step manual test cases with expected results. (As far as I am aware) If there's anything that might need reviewing, DM me back on tele or reply to the uploaded message and I'll see what I can do to remedy it.
+#### Automated tests
 
-```bash
-npm test
+Automated tests never use or modify the persistent `connectsphere` demo database.
+Every test command creates a unique temporary database, then follows this lifecycle:
+
+```text
+create connectsphere_test_<pid>_<random>
+→ apply schema
+→ seed seven roles
+→ run Jest
+→ delete temporary database
 ```
 
-Each test run creates a separate temporary `connectsphere_test_*` database,
-initialises its schema and roles, then removes it. It never modifies the persistent
-`connectsphere` demo database. To run one file, use `npm test -- tests/webGui.test.js`.
-If an interrupted run leaves a database behind, inspect it with `npm run db:test:cleanup`
-and remove only eligible inactive databases with `npm run db:test:cleanup -- --apply`.
+Tests create the users, venues, equipment, events and bookings they require. Demo
+accounts and demo data are never copied into the temporary database.
+
+```bash
+npm test                                      # full suite
+npm test -- tests/roleAccessControl.test.js   # one user-story/API test file
+npm test -- tests/webGui.test.js              # GUI-hosting/API coverage
+npm run test:coverage                         # full suite with coverage
+```
+
+If an interrupted run leaves a temporary database behind, first inspect eligible
+databases, then explicitly remove only inactive ones:
+
+```bash
+npm run db:test:cleanup
+npm run db:test:cleanup -- --apply
+```
+
+#### Manual GUI testing
+
+Start the local GUI and API with auto-reload:
+
+```bash
+npm run dev
+```
+
+Manual GUI testing uses the persistent local `connectsphere` demo database. To
+restore its curated demo accounts and sample data, you may run the following
+destructive, local-only command after backing up anything you want to retain:
+
+```bash
+npm run db:reset:demo
+```
+
+This command never runs automatically as part of `npm test`.
 
 ### Troubleshooting
 
