@@ -10,8 +10,11 @@
     "db:seed": "node scripts/seed-roles.js",
     "db:reset": "node scripts/reset-db.js",
     "db:demo": "node scripts/seed-demo.js",
+    "db:reset:demo": "npm run db:reset && npm run db:demo",
+    "db:test:cleanup": "node scripts/cleanup-test-databases.js",
     "setup": "npm run db:init && npm run db:seed && npm run db:demo",
-    "test": "jest --runInBand"
+    "test": "node scripts/run-tests.js",
+    "test:coverage": "node scripts/run-tests.js --coverage"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

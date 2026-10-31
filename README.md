@@ -41,7 +41,8 @@ Support Staff. The Help page also has written quick guides, a status glossary an
 only point things out and never change data. Progress is remembered per user in the browser,
 and **Reset progress** on the Help page starts over. The code is in `public/tutorial.js`.
 
-`npm run db:reset && npm run db:demo` restores the demo data.
+`npm run db:reset:demo` restores the local demo data. It is destructive and
+never runs as part of automated tests.
 
 ---
 
@@ -102,7 +103,10 @@ npm run db:demo    # optional: demo accounts + sample venues, equipment, events
 # or all three at once: npm run setup
 ```
 
-> Need to start over during development? `npm run db:reset` drops and rebuilds everything (blocked automatically if `NODE_ENV=production`).
+> Need to start over during development? `npm run db:reset` drops and rebuilds the
+> local `connectsphere` database with roles only. `npm run db:reset:demo` also
+> reloads demo data. Both commands reject production, shared/non-local hosts and
+> unexpected database names.
 
 ### 5. Run the server
 
@@ -447,8 +451,11 @@ To test SCRUM-21, SCRUM-22 and SCRUM-24, check separately uploaded scrumtestguid
 npm test
 ```
 
-The integration suites need the database from step 4. `npm run db:init` must have been run
-since the last pull so new tables exist.
+Each test run creates a separate temporary `connectsphere_test_*` database,
+initialises its schema and roles, then removes it. It never modifies the persistent
+`connectsphere` demo database. To run one file, use `npm test -- tests/webGui.test.js`.
+If an interrupted run leaves a database behind, inspect it with `npm run db:test:cleanup`
+and remove only eligible inactive databases with `npm run db:test:cleanup -- --apply`.
 
 ### Troubleshooting
 

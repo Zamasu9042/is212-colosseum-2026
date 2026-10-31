@@ -53,7 +53,7 @@ Times are shown in your computer's time zone. The values above assume Singapore 
 ### Run every automated test
 
 ```bash
-npm test          # all suites (needs the database from step 0)
+npm test          # all suites; uses a new temporary database automatically
 ```
 
 ---
@@ -66,8 +66,8 @@ npm test          # all suites (needs the database from step 0)
 ### Automated
 
 ```bash
-npx jest tests/equipment.status.test.js                    # 21 integration tests
-npx jest tests/equipmentAvailability.test.js -t "SCRUM-22" # 10 unit tests
+npm test -- tests/equipment.status.test.js                    # 21 integration tests
+npm test -- tests/equipmentAvailability.test.js -t "SCRUM-22" # 10 unit tests
 ```
 
 | AC | Integration test block | Unit test block |
@@ -97,8 +97,8 @@ Reset the demo data first.
 ### Automated
 
 ```bash
-npx jest tests/equipment.reservation.test.js               # 29 integration tests
-npx jest tests/equipmentAvailability.test.js -t "SCRUM-21" # 11 unit tests
+npm test -- tests/equipment.reservation.test.js               # 29 integration tests
+npm test -- tests/equipmentAvailability.test.js -t "SCRUM-21" # 11 unit tests
 ```
 
 | AC | Integration test block | Unit test block |
@@ -129,8 +129,8 @@ Reset the demo data first. Run in order.
 ### Automated
 
 ```bash
-npx jest tests/equipment.readiness.test.js                 # 22 integration tests
-npx jest tests/equipmentAvailability.test.js -t "SCRUM-24" # 10 unit tests
+npm test -- tests/equipment.readiness.test.js                 # 22 integration tests
+npm test -- tests/equipmentAvailability.test.js -t "SCRUM-24" # 10 unit tests
 ```
 
 | AC | Integration test block | Unit test block |
@@ -171,4 +171,4 @@ Reset the demo data first. Run in order.
 - items later put in repair stop counting towards readiness
 - units in service can't drop below what is already reserved
 
-Run with `npx jest tests/bugfixes`.
+Run with `npm test -- tests/bugfixes`.
