@@ -489,6 +489,58 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS venue_hold_id UUID REFERENCES venue_holds(id) ON DELETE SET NULL;
 
 -- ---------------------------------------------------------------------
+-- EVENT CHANGES DURING PLANNING
+--
+-- events.reassessment_*: set when a MAJOR change (date/time, attendance,
+-- venue or equipment requirements) is applied so venue and equipment
+-- arrangements get re-checked. Nothing is cancelled automatically.
+--
+-- event_change_log: permanent history of every applied change
+-- (field -> {from, to}), who made it, and whether it was major/ordinary.
+--
+-- event_change_requests: an Event Organiser asks for changes; the
+-- assigned Event Coordinator approves or rejects. Approval applies the
+-- change through the same path as a coordinator edit (and is logged).
+-- ---------------------------------------------------------------------
+ALTER TABLE events ADD COLUMN IF NOT EXISTS reassessment_flagged_at TIMESTAMPTZ;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS reassessment_details JSONB;
+
+CREATE TABLE IF NOT EXISTS event_change_requests (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id          UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    requested_by      UUID NOT NULL REFERENCES users(id),
+    proposed_changes  JSONB NOT NULL,
+    current_values    JSONB NOT NULL,
+    reason            TEXT,
+    is_major          BOOLEAN NOT NULL DEFAULT true,
+    status            VARCHAR(20) NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending','approved','rejected','withdrawn')),
+    reviewed_by       UUID REFERENCES users(id),
+    reviewed_at       TIMESTAMPTZ,
+    review_reason     TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_event_change_requests_event_id ON event_change_requests(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_change_requests_status ON event_change_requests(status);
+-- At most one pending change request per event at a time.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_change_requests_one_pending
+    ON event_change_requests(event_id) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS event_change_log (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id            UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    changed_by          UUID REFERENCES users(id),
+    change_type         VARCHAR(10) NOT NULL CHECK (change_type IN ('major','ordinary')),
+    source              VARCHAR(30) NOT NULL CHECK (source IN ('coordinator_update','change_request')),
+    changes             JSONB NOT NULL,
+    reason              TEXT,
+    change_request_id   UUID REFERENCES event_change_requests(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_event_change_log_event_id ON event_change_log(event_id, created_at);
+
+-- ---------------------------------------------------------------------
 -- Trigger to auto-maintain updated_at columns
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -503,7 +555,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings','event_equipment_requests','equipment_reservations']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings','event_equipment_requests','equipment_reservations','event_change_requests']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;

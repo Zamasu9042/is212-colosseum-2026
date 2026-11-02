@@ -41,6 +41,11 @@ Event.init(
     },
     technicalReadinessAt: { type: DataTypes.DATE, field: 'technical_readiness_at' },
     technicalReadinessBy: { type: DataTypes.UUID, field: 'technical_readiness_by' },
+    // Set when a MAJOR change (date/time, attendance, venue or equipment
+    // requirements) is applied, so venue/equipment arrangements get
+    // re-checked. Cleared by staff once reassessed.
+    reassessmentFlaggedAt: { type: DataTypes.DATE, field: 'reassessment_flagged_at' },
+    reassessmentDetails: { type: DataTypes.JSONB, field: 'reassessment_details' },
   },
   {
     sequelize,

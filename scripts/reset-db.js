@@ -10,6 +10,8 @@ const { execSync } = require('child_process');
 const { connectionConfig, isLocalHost } = require('../src/config/databaseConfig');
 
 const TABLES = [
+  'event_change_log',
+  'event_change_requests',
   'notifications',
   'equipment_reservations',
   'event_equipment_requests',

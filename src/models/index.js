@@ -15,6 +15,8 @@ const VenueBooking = require('./VenueBooking');
 const Notification = require('./Notification');
 const EquipmentReservation = require('./EquipmentReservation');
 const EventEquipmentRequest = require('./EventEquipmentRequest');
+const EventChangeLog = require('./EventChangeLog');
+const EventChangeRequest = require('./EventChangeRequest');
 
 // --- Associations ---
 
@@ -114,6 +116,16 @@ EventEquipmentRequest.belongsTo(Equipment, { foreignKey: 'equipmentId' });
 EventEquipmentRequest.hasMany(EquipmentReservation, { foreignKey: 'equipmentRequestId', as: 'reservations' });
 EquipmentReservation.belongsTo(EventEquipmentRequest, { foreignKey: 'equipmentRequestId', as: 'equipmentRequest' });
 
+// Event change history + organiser change requests
+Event.hasMany(EventChangeLog, { foreignKey: 'eventId', as: 'changeLog', onDelete: 'CASCADE' });
+EventChangeLog.belongsTo(Event, { foreignKey: 'eventId' });
+EventChangeLog.belongsTo(User, { foreignKey: 'changedBy', as: 'changer' });
+
+Event.hasMany(EventChangeRequest, { foreignKey: 'eventId', as: 'changeRequests', onDelete: 'CASCADE' });
+EventChangeRequest.belongsTo(Event, { foreignKey: 'eventId' });
+EventChangeRequest.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester' });
+EventChangeRequest.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
+
 module.exports = {
   sequelize,
   Role,
@@ -133,4 +145,6 @@ module.exports = {
   Notification,
   EquipmentReservation,
   EventEquipmentRequest,
+  EventChangeLog,
+  EventChangeRequest,
 };
