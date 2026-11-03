@@ -15,6 +15,10 @@ const VenueBooking = require('./VenueBooking');
 const Notification = require('./Notification');
 const OperationalSafetyCheck = require('./OperationalSafetyCheck');
 const EventRegistration = require('./EventRegistration');
+const EquipmentReservation = require('./EquipmentReservation');
+const EventEquipmentRequest = require('./EventEquipmentRequest');
+const EventChangeLog = require('./EventChangeLog');
+const EventChangeRequest = require('./EventChangeRequest');
 
 // --- Associations ---
 
@@ -110,6 +114,30 @@ Notification.belongsTo(VenueHold, { foreignKey: 'venueHoldId' });
 // User (holder) <-> VenueHold
 VenueHold.belongsTo(User, { foreignKey: 'heldBy', as: 'holder' });
 
+// --- Equipment (SCRUM-21 / SCRUM-24) ---
+Event.hasMany(EquipmentReservation, { foreignKey: 'eventId', as: 'equipmentReservations' });
+EquipmentReservation.belongsTo(Event, { foreignKey: 'eventId' });
+Equipment.hasMany(EquipmentReservation, { foreignKey: 'equipmentId', as: 'reservations' });
+EquipmentReservation.belongsTo(Equipment, { foreignKey: 'equipmentId' });
+EquipmentReservation.belongsTo(User, { foreignKey: 'reservedBy', as: 'reserver' });
+EquipmentReservation.belongsTo(User, { foreignKey: 'cancelledBy', as: 'canceller' });
+
+Event.hasMany(EventEquipmentRequest, { foreignKey: 'eventId', as: 'equipmentRequests' });
+EventEquipmentRequest.belongsTo(Event, { foreignKey: 'eventId' });
+EventEquipmentRequest.belongsTo(Equipment, { foreignKey: 'equipmentId' });
+EventEquipmentRequest.hasMany(EquipmentReservation, { foreignKey: 'equipmentRequestId', as: 'reservations' });
+EquipmentReservation.belongsTo(EventEquipmentRequest, { foreignKey: 'equipmentRequestId', as: 'equipmentRequest' });
+
+// Event change history + organiser change requests
+Event.hasMany(EventChangeLog, { foreignKey: 'eventId', as: 'changeLog', onDelete: 'CASCADE' });
+EventChangeLog.belongsTo(Event, { foreignKey: 'eventId' });
+EventChangeLog.belongsTo(User, { foreignKey: 'changedBy', as: 'changer' });
+
+Event.hasMany(EventChangeRequest, { foreignKey: 'eventId', as: 'changeRequests', onDelete: 'CASCADE' });
+EventChangeRequest.belongsTo(Event, { foreignKey: 'eventId' });
+EventChangeRequest.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester' });
+EventChangeRequest.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
+
 module.exports = {
   sequelize,
   Role,
@@ -129,4 +157,8 @@ module.exports = {
   Notification,
   OperationalSafetyCheck,
   EventRegistration,
+  EquipmentReservation,
+  EventEquipmentRequest,
+  EventChangeLog,
+  EventChangeRequest,
 };

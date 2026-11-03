@@ -33,15 +33,21 @@ async function loadVenueSchedules(venueIds, { transaction, excludeBookingId } = 
   const bookingWhere = { ...inVenues, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } };
   if (excludeBookingId) bookingWhere.id = { [Op.ne]: excludeBookingId };
 
-  const [events, holds, unavailability, bookings] = await Promise.all([
-    Event.findAll({
+  const queries = [
+    () => Event.findAll({
       where: { ...inVenues, status: { [Op.in]: BLOCKING_EVENT_STATUSES } },
       transaction,
     }),
-    VenueHold.findAll({ where: { ...inVenues, status: 'active' }, transaction }),
-    VenueUnavailability.findAll({ where: inVenues, transaction }),
-    VenueBooking.findAll({ where: bookingWhere, transaction }),
-  ]);
+    () => VenueHold.findAll({ where: { ...inVenues, status: 'active' }, transaction }),
+    () => VenueUnavailability.findAll({ where: inVenues, transaction }),
+    () => VenueBooking.findAll({ where: bookingWhere, transaction }),
+  ];
+
+  // A Sequelize transaction owns one PostgreSQL connection. Its queries must
+  // be awaited in sequence; concurrent client.query calls are deprecated by pg.
+  const [events, holds, unavailability, bookings] = transaction
+    ? [await queries[0](), await queries[1](), await queries[2](), await queries[3]()]
+    : await Promise.all(queries.map((query) => query()));
 
   // Live venue bookings (pending/approved) occupy a venue exactly like a
   // booked event does, so they are fed to the conflict rules as events.

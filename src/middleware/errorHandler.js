@@ -17,7 +17,18 @@ const CLIENT_CAUSED_PG_ERROR_CODES = new Set([
 
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
-  console.error(err);
+  const isExpectedClientError =
+    (err.status >= 400 && err.status < 500) ||
+    err.name === 'SequelizeValidationError' ||
+    err.name === 'SequelizeUniqueConstraintError' ||
+    err.name === 'SequelizeForeignKeyConstraintError' ||
+    (err.name === 'SequelizeDatabaseError' && CLIENT_CAUSED_PG_ERROR_CODES.has(err.parent?.code));
+
+  if (isExpectedClientError) {
+    process.stderr.write(`[${req.method} ${req.originalUrl}] ${err.name}: ${err.message}\n`);
+  } else {
+    console.error(`[${req.method} ${req.originalUrl}] Unexpected error:`, err);
+  }
 
   if (err.name === 'SequelizeValidationError' || err.name === 'SequelizeUniqueConstraintError') {
     return res.status(400).json({

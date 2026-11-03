@@ -7,9 +7,14 @@
 require('dotenv').config();
 const { Client } = require('pg');
 const { execSync } = require('child_process');
+const { connectionConfig, isLocalHost } = require('../src/config/databaseConfig');
 
 const TABLES = [
+  'event_change_log',
+  'event_change_requests',
   'notifications',
+  'equipment_reservations',
+  'event_equipment_requests',
   'venue_bookings',
   'venue_holds',
   'venue_unavailability',
@@ -26,18 +31,13 @@ const TABLES = [
 ];
 
 async function main() {
-  if (process.env.NODE_ENV === 'production') {
-    console.error('❌ Refusing to run db:reset with NODE_ENV=production.');
+  const config = connectionConfig();
+  if (process.env.NODE_ENV === 'production' || config.database !== 'connectsphere' || !isLocalHost(config.host)) {
+    console.error('❌ db:reset is restricted to the local connectsphere development database.');
     process.exit(1);
   }
 
-  const client = new Client({
-    host: process.env.DB_HOST || 'localhost',
-    port: process.env.DB_PORT || 5432,
-    database: process.env.DB_NAME || 'connectsphere',
-    user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'postgres',
-  });
+  const client = new Client(config);
 
   try {
     await client.connect();

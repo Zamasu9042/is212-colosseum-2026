@@ -2,6 +2,7 @@ require('dotenv').config();
 const app = require('./app');
 const sequelize = require('./config/db');
 const { startHoldExpiryScheduler } = require('./services/holdExpiryService');
+const { startEquipmentStatusScheduler } = require('./services/equipmentReservationService');
 
 const PORT = process.env.PORT || 4000;
 
@@ -23,6 +24,10 @@ async function start() {
   // "expiring soon" / "expired" notifications (Week 7). Interval is
   // HOLD_EXPIRY_SWEEP_INTERVAL_MS (default 60s).
   startHoldExpiryScheduler();
+
+  // Clears the 'reserved' flag on equipment whose reservations have all
+  // ended (EQUIPMENT_STATUS_SWEEP_INTERVAL_MS, default 60s).
+  startEquipmentStatusScheduler();
 }
 
 start();

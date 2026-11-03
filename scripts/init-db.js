@@ -9,15 +9,10 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
+const { connectionConfig } = require('../src/config/databaseConfig');
 
 async function main() {
-  const client = new Client({
-    host: process.env.DB_HOST || 'localhost',
-    port: process.env.DB_PORT || 5432,
-    database: process.env.DB_NAME || 'connectsphere',
-    user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'postgres',
-  });
+  const client = new Client(connectionConfig());
 
   const schemaPath = path.join(__dirname, '..', 'src', 'migrations', 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');

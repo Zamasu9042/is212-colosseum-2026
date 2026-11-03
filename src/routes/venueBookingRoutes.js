@@ -13,7 +13,7 @@ const { authenticate } = require('../middleware/auth');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
 const { runBookingChecks } = require('../utils/bookingChecks');
-const { checkVenueConflicts } = require('../services/venueConflictService');
+const { checkVenueConflicts, lockVenues } = require('../services/venueConflictService');
 
 const router = express.Router();
 
@@ -47,6 +47,19 @@ const canViewEventBookings = (req, event) =>
   isOwningOrganiser(req, event) ||
   req.user.role === ROLE_NAMES.VENUE_STAFF ||
   req.user.role === ROLE_NAMES.SAFETY_OFFICER;
+
+/**
+ * Runs fn(transaction) with the venue row locked (SELECT ... FOR UPDATE), so
+ * the conflict check and the write that follows it happen atomically.
+ * Without this, two concurrent requests for the same slot could both pass
+ * runBookingChecks and both be saved (double-booking).
+ */
+function withVenueLock(venueId, fn) {
+  return VenueBooking.sequelize.transaction(async (transaction) => {
+    await lockVenues([venueId], transaction);
+    return fn(transaction);
+  });
+}
 
 async function notify(userId, type, message, { eventId, venueBookingId } = {}) {
   if (!userId) return;
@@ -133,21 +146,24 @@ router.post(
       const venue = await Venue.findByPk(req.body.venueId);
       if (!venue) return res.status(404).json({ error: 'Venue not found.' });
 
-      const failures = await runBookingChecks({ venue, event, start, end, attendance });
-      if (failures.length) return checksFailed(res, failures);
-
-      const booking = await VenueBooking.create({
-        eventId: event.id,
-        venueId: venue.id,
-        requestedBy: req.user.id,
-        startDatetime: start,
-        endDatetime: end,
-        expectedAttendance: attendance,
-        requirements: req.body.requirements,
-        status: 'pending',
+      const result = await withVenueLock(venue.id, async (transaction) => {
+        const failures = await runBookingChecks({ venue, event, start, end, attendance, transaction });
+        if (failures.length) return { failures };
+        const booking = await VenueBooking.create({
+          eventId: event.id,
+          venueId: venue.id,
+          requestedBy: req.user.id,
+          startDatetime: start,
+          endDatetime: end,
+          expectedAttendance: attendance,
+          requirements: req.body.requirements,
+          status: 'pending',
+        }, { transaction });
+        return { booking };
       });
+      if (result.failures) return checksFailed(res, result.failures);
 
-      res.status(201).json({ booking });
+      res.status(201).json({ booking: result.booking });
     } catch (err) {
       next(err);
     }
@@ -319,10 +335,9 @@ router.post(
       }
       const attendance = req.body.expectedAttendance ?? booking.expectedAttendance;
 
-      const failures = await runBookingChecks({ venue, event, start, end, attendance });
-      if (failures.length) return checksFailed(res, failures);
-
-      const replacement = await VenueBooking.sequelize.transaction(async (transaction) => {
+      const outcome = await withVenueLock(venue.id, async (transaction) => {
+        const failures = await runBookingChecks({ venue, event, start, end, attendance, transaction });
+        if (failures.length) return { failures };
         const created = await VenueBooking.create(
           {
             eventId: event.id,
@@ -338,10 +353,11 @@ router.post(
           { transaction }
         );
         await booking.update({ status: 'replaced' }, { transaction });
-        return created;
+        return { replacement: created };
       });
+      if (outcome.failures) return checksFailed(res, outcome.failures);
 
-      res.status(201).json({ booking: replacement, replaced: booking.id });
+      res.status(201).json({ booking: outcome.replacement, replaced: booking.id });
     } catch (err) {
       next(err);
     }
@@ -380,17 +396,18 @@ router.patch(
       }
       const attendance = req.body.expectedAttendance ?? booking.expectedAttendance;
 
-      const failures = await runBookingChecks({
-        venue: await Venue.findByPk(booking.venueId),
-        event,
-        start,
-        end,
-        attendance,
-        excludeBookingId: booking.id,
-      });
-      if (failures.length) return checksFailed(res, failures);
-
-      await booking.update({
+      const failures = await withVenueLock(booking.venueId, async (transaction) => {
+        const found = await runBookingChecks({
+          venue: await Venue.findByPk(booking.venueId, { transaction }),
+          event,
+          start,
+          end,
+          attendance,
+          excludeBookingId: booking.id,
+          transaction,
+        });
+        if (found.length) return found;
+        await booking.update({
         startDatetime: start,
         endDatetime: end,
         expectedAttendance: attendance,
@@ -402,7 +419,10 @@ router.patch(
         // It just passed the full conflict checks, so any audit flag is stale.
         conflictFlaggedAt: null,
         conflictDetails: null,
+        }, { transaction });
+        return [];
       });
+      if (failures.length) return checksFailed(res, failures);
       res.json({ booking });
     } catch (err) {
       next(err);
@@ -468,28 +488,36 @@ router.post(
 
       // Things may have changed since submission (new maintenance period,
       // another approved booking) so re-check before confirming.
-      const failures = (
-        await runBookingChecks({
+      // Locked so a concurrent approval/request for the same venue can't
+      // slip in between the re-check and the status change.
+      const failures = await withVenueLock(venue.id, async (transaction) => {
+        await booking.reload({ transaction, lock: transaction.LOCK.UPDATE });
+        if (booking.status !== 'pending') {
+          return [{ check: 'status', message: `This booking is already ${booking.status}.` }];
+        }
+        const found = await runBookingChecks({
           venue,
           event,
           start: booking.startDatetime,
           end: booking.endDatetime,
           attendance: booking.expectedAttendance,
           excludeBookingId: booking.id,
-        })
-      );
+          transaction,
+        });
+        if (found.length) return found;
+        await booking.update({
+          status: 'approved',
+          reviewedBy: req.user.id,
+          reviewedAt: new Date(),
+          reviewReason: null,
+          conflictFlaggedAt: null,
+          conflictDetails: null,
+        }, { transaction });
+        return [];
+      });
       if (failures.length) {
         return res.status(409).json({ error: 'This booking can no longer be approved.', failures });
       }
-
-      await booking.update({
-        status: 'approved',
-        reviewedBy: req.user.id,
-        reviewedAt: new Date(),
-        reviewReason: null,
-        conflictFlaggedAt: null,
-        conflictDetails: null,
-      });
       await notify(
         event.coordinatorId,
         'venue_booking_approved',

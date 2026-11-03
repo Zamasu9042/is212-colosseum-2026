@@ -12,6 +12,7 @@ const {
   windowsOverlap,
   getEffectiveWindow,
   findVenueConflicts,
+  isHoldActive,
 } = require('./venueConflicts');
 
 // These are API display states, rather than new database states.  Keeping the
@@ -135,7 +136,48 @@ function computeAvailability(venue, events, queryStart, queryEnd, extra = {}) {
  * contains overlapping reservations. Expired holds are shown for context but
  * remain available for a new request.
  */
-function buildAvailabilitySlots(venue, events, rangeStart, rangeEnd) {
+/**
+ * Non-event records that also occupy a venue, as calendar reservations.
+ * Same sources the booking conflict check uses (venueConflictService), so
+ * the calendar never shows a slot as free that a request would be refused for:
+ *   - venue bookings: pending -> tentative hold, approved -> confirmed booking
+ *   - tentative holds: active -> tentative hold; expired -> expired hold (context)
+ *   - unavailability periods -> temporarily unavailable (exact window, no buffer)
+ */
+function extraReservations(venue, { bookings = [], holds = [], unavailability = [], now = new Date() } = {}) {
+  const out = [];
+  for (const b of bookings) {
+    const state = b.status === 'approved' ? AVAILABILITY_STATES.CONFIRMED_BOOKING
+      : b.status === 'pending' ? AVAILABILITY_STATES.TENTATIVE_HOLD : null;
+    if (!state) continue;
+    out.push({
+      state,
+      window: getEffectiveWindow(b.startDatetime, b.endDatetime, venue),
+      ref: { id: b.eventId, status: b.status, venueBookingId: b.id },
+    });
+  }
+  for (const h of holds) {
+    let state = null;
+    if (isHoldActive(h, now)) state = AVAILABILITY_STATES.TENTATIVE_HOLD;
+    else if (h.status === 'expired' || (h.status === 'active' && !isHoldActive(h, now))) state = AVAILABILITY_STATES.EXPIRED_HOLD;
+    if (!state) continue;
+    out.push({
+      state,
+      window: getEffectiveWindow(h.startDatetime, h.endDatetime, venue),
+      ref: { id: h.eventId || null, status: h.status, venueHoldId: h.id },
+    });
+  }
+  for (const u of unavailability) {
+    out.push({
+      state: AVAILABILITY_STATES.TEMPORARILY_UNAVAILABLE,
+      window: { start: new Date(u.startDatetime), end: new Date(u.endDatetime) },
+      ref: { id: null, status: 'unavailable', unavailabilityId: u.id, reason: u.reason },
+    });
+  }
+  return out;
+}
+
+function buildAvailabilitySlots(venue, events, rangeStart, rangeEnd, extra = {}) {
   const start = new Date(rangeStart);
   const end = new Date(rangeEnd);
   if (!(end > start)) return [];
@@ -150,12 +192,15 @@ function buildAvailabilitySlots(venue, events, rangeStart, rangeEnd) {
     state,
     displayState: DISPLAY_STATE_LABELS[state],
     isAvailable: state === AVAILABILITY_STATES.AVAILABLE || state === AVAILABILITY_STATES.EXPIRED_HOLD,
-    ...(event ? {
+    ...(event && event.id ? {
       eventId: event.id,
       eventStatus: event.status,
       hasConflict: conflictsForEvent(event.id).length > 0,
       conflictingEventIds: conflictsForEvent(event.id),
     } : {}),
+    ...(event && event.venueBookingId ? { venueBookingId: event.venueBookingId } : {}),
+    ...(event && event.venueHoldId ? { venueHoldId: event.venueHoldId } : {}),
+    ...(event && event.unavailabilityId ? { unavailabilityId: event.unavailabilityId, reason: event.reason } : {}),
   });
 
   if (venue.status !== 'available') {
@@ -173,12 +218,19 @@ function buildAvailabilitySlots(venue, events, rangeStart, rangeEnd) {
     })
     .filter(Boolean);
 
+  for (const r of extraReservations(venue, extra)) {
+    const clippedStart = r.window.start > start ? r.window.start : start;
+    const clippedEnd = r.window.end < end ? r.window.end : end;
+    if (clippedEnd > clippedStart) reservations.push({ event: r.ref, state: r.state, start: clippedStart, end: clippedEnd });
+  }
+
   const boundaries = [...new Set([start.getTime(), end.getTime(), ...reservations.flatMap((r) => [r.start.getTime(), r.end.getTime()])])]
     .sort((a, b) => a - b);
   const priority = {
     [AVAILABILITY_STATES.EXPIRED_HOLD]: 1,
     [AVAILABILITY_STATES.TENTATIVE_HOLD]: 2,
     [AVAILABILITY_STATES.CONFIRMED_BOOKING]: 3,
+    [AVAILABILITY_STATES.TEMPORARILY_UNAVAILABLE]: 4,
   };
   const slots = [];
 
@@ -196,7 +248,10 @@ function buildAvailabilitySlots(venue, events, rangeStart, rangeEnd) {
     // A continuous run of the same state is easier for a calendar client to
     // render. Keep event identifiers separate so adjacent distinct holds are
     // still visible as distinct records.
-    if (previous && previous.state === slot.state && previous.eventId === slot.eventId) {
+    const sameRecord = previous && previous.eventId === slot.eventId
+      && previous.venueBookingId === slot.venueBookingId && previous.venueHoldId === slot.venueHoldId
+      && previous.unavailabilityId === slot.unavailabilityId;
+    if (previous && previous.state === slot.state && sameRecord) {
       previous.endDateTime = slot.endDateTime;
     } else {
       slots.push(slot);

@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 
 const { body, query } = require('express-validator');
-const { Venue, Event } = require('../models');
+const { Venue, Event, VenueBooking, VenueHold, VenueUnavailability } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
@@ -299,10 +299,22 @@ router.get('/availability', authenticate, availabilityValidators, validateReques
       where: venueIds.length ? { id: { [Op.in]: venueIds } } : undefined,
       order: [['name', 'ASC']],
     });
-    const events = venues.length
-      ? await Event.findAll({ where: { venueId: { [Op.in]: venues.map((venue) => venue.id) } } })
-      : [];
+    const venueIdList = venues.map((venue) => venue.id);
+    const inRange = { startDatetime: { [Op.lt]: queryEnd }, endDatetime: { [Op.gt]: new Date(queryStart.getTime() - 2 * 24 * 60 * 60 * 1000) } };
+    const [events, bookings, holds, unavailability] = venues.length
+      ? await Promise.all([
+        Event.findAll({ where: { venueId: { [Op.in]: venueIdList } } }),
+        // Same sources as the booking conflict check, so the calendar never
+        // shows a slot as free that a booking request would be refused for.
+        VenueBooking.findAll({ where: { venueId: { [Op.in]: venueIdList }, status: { [Op.in]: ['pending', 'approved'] }, ...inRange } }),
+        VenueHold.findAll({ where: { venueId: { [Op.in]: venueIdList }, status: { [Op.in]: ['active', 'expired'] }, ...inRange } }),
+        VenueUnavailability.findAll({ where: { venueId: { [Op.in]: venueIdList }, ...inRange } }),
+      ])
+      : [[], [], [], []];
     const eventsByVenue = groupEventsByVenue(events);
+    const bookingsByVenue = groupByVenue(bookings);
+    const holdsByVenue = groupByVenue(holds);
+    const unavailabilityByVenue = groupByVenue(unavailability);
     const availability = venues.map((venue) => ({
       venue: {
         id: venue.id,
@@ -313,7 +325,11 @@ router.get('/availability', authenticate, availabilityValidators, validateReques
         teardownMinutes: venue.teardownMinutes,
         turnaroundMinutes: venue.teardownMinutes,
       },
-      slots: buildAvailabilitySlots(venue, eventsByVenue[venue.id], queryStart, queryEnd),
+      slots: buildAvailabilitySlots(venue, eventsByVenue[venue.id], queryStart, queryEnd, {
+        bookings: bookingsByVenue[venue.id],
+        holds: holdsByVenue[venue.id],
+        unavailability: unavailabilityByVenue[venue.id],
+      }),
       conflicts: findReservationConflicts(venue, eventsByVenue[venue.id]),
     }));
 

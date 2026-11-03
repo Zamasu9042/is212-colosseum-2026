@@ -1,6 +1,52 @@
 # is212-colosseum-2026
 
-## Getting Started
+ConnectSphere Event Planning & Venue Booking System — REST API plus a
+browser-based GUI.
+
+## Quick start (web GUI)
+
+You need **Node.js 18+** and **PostgreSQL 14+**. With Docker, PostgreSQL is
+one command.
+
+```bash
+npm install
+cp .env.example .env          # defaults match the Docker database below
+docker compose up -d          # or use your own PostgreSQL (see step 2)
+npm run setup                 # schema + roles + demo data
+npm run dev                   # starts the GUI/API with auto-reload
+```
+
+Open **http://localhost:4000** and sign in. The login page has one-click
+buttons for the demo accounts (password `Passw0rd1` for all):
+
+| Account | Role | Try this |
+|---|---|---|
+| `organiser@demo.connectsphere.sg` | Event Organiser | Draft and submit an event request |
+| `coordinator@demo.connectsphere.sg` | Event Coordinator | Review queue → approve *Data Science Workshop*; request a venue; add equipment needs |
+| `lead@demo.connectsphere.sg` | Coordinator Lead | Assign *Partner Networking Night* to a coordinator |
+| `venue@demo.connectsphere.sg` | Venue Staff | Approve/reject venue bookings; venue schedule |
+| `tech@demo.connectsphere.sg` | Technical Support | Equipment catalogue; open *Annual Leadership Summit* to reserve equipment and complete technical readiness |
+| `safety@demo.connectsphere.sg` | Safety Officer | Read-only events and equipment |
+| `attendee@demo.connectsphere.sg` | Attendee | Edit profile |
+
+The GUI is a dependency-free single-page app in `public/`, served by the same
+Express server as the API, so there's no separate build or frontend server. All rules
+are enforced by the API, and the GUI only presents them. It works on desktop and mobile.
+
+**Tutorials.** On a user's first sign-in, a guided "Getting started" tour for their role
+starts automatically. **Help & tutorials** in the sidebar (or the **? Help** button) lets them
+replay it and start the feature tutorials: *Manage equipment status* (SCRUM-22), *Reserve
+equipment for an event* (SCRUM-21) and *Complete technical readiness* (SCRUM-24) for Technical
+Support Staff. The Help page also has written quick guides, a status glossary and FAQs. Tours
+only point things out and never change data. Progress is remembered per user in the browser,
+and **Reset progress** on the Help page starts over. The code is in `public/tutorial.js`.
+
+`npm run db:reset:demo` restores the local demo data. It is destructive and
+never runs as part of automated tests.
+
+---
+
+## Getting Started (detailed)
 
 ### Prerequisites
 
@@ -52,10 +98,15 @@ Then edit `.env`:
 
 ```bash
 npm run db:init    # applies the schema (tables, constraints, triggers)
-npm run db:seed    # inserts the 5 system roles
+npm run db:seed    # inserts the system roles
+npm run db:demo    # optional: demo accounts + sample venues, equipment, events
+# or all three at once: npm run setup
 ```
 
-> Need to start over during development? `npm run db:reset` drops and rebuilds everything (blocked automatically if `NODE_ENV=production`).
+> Need to start over during development? `npm run db:reset` drops and rebuilds the
+> local `connectsphere` database with roles only. `npm run db:reset:demo` also
+> reloads demo data. Both commands reject production, shared/non-local hosts and
+> unexpected database names.
 
 ### 5. Run the server
 
@@ -65,7 +116,7 @@ npm run dev     # with auto-reload (nodemon)
 npm start       # plain node
 ```
 
-The API will be available at `http://localhost:4000` (or whatever `PORT` you set). Confirm it's up:
+The web GUI is at `http://localhost:4000/` and the API under `http://localhost:4000/api` (or whatever `PORT` you set). Confirm it's up:
 
 ```bash
 curl http://localhost:4000/health
@@ -310,11 +361,138 @@ To list flagged bookings, Venue Staff can call `GET /api/venue-bookings?flagged=
 | Setup / turnaround, unavailability, multiple venues (requests) | `tests/venueConflicts.test.js` | `tests/venueConflictAudit.test.js` → `new booking requests` |
 | Existing bookings flagged and preserved | `tests/venueConflicts.test.js` → `Existing bookings re-checked` | `tests/venueConflictAudit.test.js` → `existing bookings`, `audit covers` |
 
-### 7. Run the tests
+### 6f. Equipment status, reservations and technical readiness (SCRUM-21, SCRUM-22, SCRUM-24)
+
+**Equipment status (SCRUM-22).** Each item is `available`, `reserved`, `in_repair` or
+`unavailable`. `reserved` is **system-managed**: it is set while the item has at least one
+live reservation, and cleared when the last one is cancelled. It cannot be set by hand.
+`in_repair`/`unavailable` items are never selectable and never reservable. Existing rows
+are migrated `maintenance → in_repair`, `damaged → unavailable` by `npm run db:init`.
+
+**Reservations (SCRUM-21, SCRUM-24).** A reservation commits `quantity` units of one item
+to one approved event for a window, which defaults to the event's own start/end. A custom
+window must lie inside it. Two reservations of the same item overlap when each starts before
+the other ends. **There is no setup, turnaround or transit buffer**, even across venues, so
+`10:00–12:00` and `12:00–14:00` don't conflict. A multi-unit item only conflicts once its
+units in service (`quantityAvailable`) run out. The item row is locked inside the
+transaction, so concurrent requests can't double-book it.
+
+**Technical readiness (SCRUM-24).** An event's equipment needs are recorded as request
+lines (e.g. `2 × Projector`, optionally pinned to one item). A reservation can be linked to
+a line. Its item must match the line's type (or pinned item) and can't exceed what the line
+still needs. Readiness can only be marked `complete` when every line is fully allocated.
+It goes back to `pending` automatically if a covering reservation is cancelled or a new line
+is added.
+
+| Method & path | Who | Notes |
+|---|---|---|
+| `GET /api/equipment` | Coordinator, Lead, Tech, Safety | `status=available` or `status=in_repair,unavailable`; `type`; `search`; `selectable=true` drops in-repair/unavailable items, and with `eventId=` or `startDatetime`+`endDatetime` also drops items with no free unit in that window (adds `availableQuantity`) |
+| `GET /api/equipment/:id` | same | Item plus all its reservations (equipment detail page) |
+| `POST /api/equipment` · `PATCH /api/equipment/:id` | Tech | `status` may only be `available`/`in_repair`/`unavailable` |
+| `PATCH /api/equipment/:id/status` | Tech | `{ status }`. Taking a reserved item out of service keeps its reservations and returns them as `affectedReservations` + `warning` |
+| `GET /api/events` | Tech, Coordinator (own), Lead, Safety, Venue Staff | `?status=planning,confirmed` |
+| `GET /api/events/:id` | Tech, Coordinator (own), Lead, Safety | Includes `equipmentReservations` and `equipmentAllocation` (event detail page) |
+| `GET /api/events/:id/equipment-reservations` | Tech, Coordinator (own), Lead, Safety | |
+| `POST /api/events/:id/equipment-reservations` | Tech | `{ equipmentId, quantity?, startDatetime?, endDatetime?, equipmentRequestId? }`. **409** overlap conflict with `conflicts[]`; **422** in-repair/unavailable item, window outside the event, line mismatch |
+| `POST /api/equipment-reservations/:id/cancel` | Tech | `{ reason? }`. Item reverts to `available` when nothing else holds it; response has `readinessReverted` |
+| `GET /api/equipment-reservations` | Tech, Lead | `equipmentId`, `eventId`, `status` filters |
+| `GET/POST /api/events/:id/equipment-requests` | Coordinator (own), Tech (POST); readers as above (GET) | `{ equipmentType or equipmentId, quantityRequested, technicalRequirements? }`. GET includes per-line allocation |
+| `DELETE /api/events/:id/equipment-requests/:requestId` | Coordinator (own), Tech | **409** while reservations are allocated to it |
+| `GET /api/events/:id/technical-readiness` | readers as above | `canComplete` + allocation summary |
+| `PATCH /api/events/:id/technical-readiness` | Tech | `{ complete: true }` → **409** listing shortfalls unless fully allocated; `{ complete: false }` resets |
+
+Every reservation stores `eventId`, `equipmentId`, `organiserName` (snapshot), `reservedAt`
+and `reservedBy`. Cancelled reservations are kept with `cancelledAt`, `cancelledBy` and
+`cancellationReason`. The event's coordinator is notified when equipment is reserved or a
+reservation is cancelled.
+
+**Test traceability**
+
+| Story / AC | Unit (`tests/equipmentAvailability.test.js`) | Integration |
+|---|---|---|
+| SCRUM-22 AC1 selectable list | `SCRUM-22 AC1/AC2` | `tests/equipment.status.test.js` → `AC1` |
+| SCRUM-22 AC2 block in-repair/unavailable | `SCRUM-22 AC1/AC2` | `tests/equipment.status.test.js` → `AC2` |
+| SCRUM-22 AC3 status filter | `SCRUM-22 AC3` | `tests/equipment.status.test.js` → `AC3` |
+| SCRUM-21 AC1 available → reserved | `SCRUM-21 AC1/AC5` | `tests/equipment.reservation.test.js` → `AC1` |
+| SCRUM-21 AC2 overlap conflict | `SCRUM-21 AC2` | `tests/equipment.reservation.test.js` → `AC2` (incl. concurrency) |
+| SCRUM-21 AC3 metadata | – | `tests/equipment.reservation.test.js` → `AC3` |
+| SCRUM-21 AC4 event + equipment pages | – | `tests/equipment.reservation.test.js` → `AC4` |
+| SCRUM-21 AC5 cancel reverts | `SCRUM-21 AC1/AC5` | `tests/equipment.reservation.test.js` → `AC5` |
+| SCRUM-24 AC1/AC2 time-slot overlap, no transit | `SCRUM-24 AC1/AC2` | `tests/equipment.readiness.test.js` → `AC1`, `AC2` |
+| SCRUM-24 AC3 full allocation for readiness | `SCRUM-24 AC3` | `tests/equipment.readiness.test.js` → `AC3` |
+
+**Related changes.** Coordinator approval (`PATCH /api/event-requests/:id/status`
+`{status:'approved'}`) now creates the request's `Event` row (status `planning`), so newly
+approved requests can have venues and equipment arranged. `GET /api/event-requests?scope=all`
+returns every request the organiser owns (the default is still drafts only).
+`GET /api/users?role=event_coordinator` (Lead only) lists coordinators for assignment.
+
+> Existing databases: run `npm run db:init` again. It is idempotent.
+
+### Bug fixes (October code review)
+
+Each fix has a regression test named after its bug id.
+
+| Bug | Problem | Fix | Test |
+|---|---|---|---|
+| BUG-1 | Two concurrent venue booking requests or approvals for the same slot could both pass the conflict check (double-booking) | Check and write run in one transaction under a venue row lock (`withVenueLock`) | `tests/bugfixes.venue.test.js` |
+| BUG-2 | The venue calendar ignored venue booking requests, active holds and unavailability periods | Calendar uses the same sources as the booking check: pending booking → tentative hold, approved → confirmed, unavailability → temporarily unavailable | `tests/bugfixes.venue.test.js` |
+| BUG-3 | An item stayed `reserved` forever after its last reservation ended | `releaseEndedReservations()` on catalogue reads plus a 60s sweep (`EQUIPMENT_STATUS_SWEEP_INTERVAL_MS`) | `tests/bugfixes.equipment.test.js` |
+| BUG-4 | Equipment could be reserved for a window that had already ended | **422** for windows that have already ended | same |
+| BUG-5 | Reservations on items later put in repair/unavailable still counted towards readiness | They no longer count (`outOfServiceQuantity` is reported), readiness reverts, and the coordinator gets an `equipment_out_of_service` notification | same |
+| BUG-6 | Lowering units in service below what's already reserved over-committed the item | **409** when the new value is below the peak concurrent reserved quantity | same |
+| BUG-7 | A request accepted by Venue Staff never became an Event | Both approval paths create the Event | same |
+
+### 7. Testing
+
+#### Automated tests
+
+Automated tests never use or modify the persistent `connectsphere` demo database.
+Every test command creates a unique temporary database, then follows this lifecycle:
+
+```text
+create connectsphere_test_<pid>_<random>
+→ apply schema
+→ seed seven roles
+→ run Jest
+→ delete temporary database
+```
+
+Tests create the users, venues, equipment, events and bookings they require. Demo
+accounts and demo data are never copied into the temporary database.
 
 ```bash
-npm test
+npm test                                      # full suite
+npm test -- tests/roleAccessControl.test.js   # one user-story/API test file
+npm test -- tests/webGui.test.js              # GUI-hosting/API coverage
+npm run test:coverage                         # full suite with coverage
 ```
+
+If an interrupted run leaves a temporary database behind, first inspect eligible
+databases, then explicitly remove only inactive ones:
+
+```bash
+npm run db:test:cleanup
+npm run db:test:cleanup -- --apply
+```
+
+#### Manual GUI testing
+
+Start the local GUI and API with auto-reload:
+
+```bash
+npm run dev
+```
+
+Manual GUI testing uses the persistent local `connectsphere` demo database. To
+restore its curated demo accounts and sample data, you may run the following
+destructive, local-only command after backing up anything you want to retain:
+
+```bash
+npm run db:reset:demo
+```
+
+This command never runs automatically as part of `npm test`.
 
 ### Troubleshooting
 
