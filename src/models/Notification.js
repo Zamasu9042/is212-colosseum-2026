@@ -12,6 +12,9 @@ Notification.init(
     eventId: { type: DataTypes.UUID, field: 'event_id' },
     venueBookingId: { type: DataTypes.UUID, field: 'venue_booking_id' },
     venueHoldId: { type: DataTypes.UUID, field: 'venue_hold_id' },
+    // Machine-readable detail/actions for clients.  The message remains a
+    // complete plain-text fallback for older notification consumers.
+    metadata: { type: DataTypes.JSONB },
     readAt: { type: DataTypes.DATE, field: 'read_at' },
   },
   {

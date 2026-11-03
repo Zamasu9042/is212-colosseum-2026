@@ -175,4 +175,37 @@ describe('Attendee Controller', () => {
     });
   });
 
+  describe('notification preferences', () => {
+    test('updates only notification toggles while retaining other JSON preferences', async () => {
+      const mockUser = {
+        id: 'attendee-123',
+        communicationPrefs: { preferredLanguage: 'en', emailNotifications: true },
+        isActive: true,
+        update: jest.fn().mockImplementation(function (fields) {
+          Object.assign(this, fields);
+          return Promise.resolve(this);
+        }),
+      };
+      User.findByPk.mockResolvedValue(mockUser);
+      const res = mockResponse();
+
+      await attendeeController.updatePreferences(
+        { user: { id: 'attendee-123' }, body: { inAppNotifications: false } },
+        res,
+        jest.fn()
+      );
+
+      expect(mockUser.update).toHaveBeenCalledWith({
+        communicationPrefs: {
+          preferredLanguage: 'en',
+          emailNotifications: true,
+          inAppNotifications: false,
+        },
+      });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        notificationPreferences: { emailNotifications: true, inAppNotifications: false },
+      }));
+    });
+  });
+
 });

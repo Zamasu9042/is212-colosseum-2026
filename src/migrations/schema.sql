@@ -211,9 +211,11 @@ CREATE TABLE IF NOT EXISTS events (
     end_datetime        TIMESTAMPTZ NOT NULL,
     status              VARCHAR(30) NOT NULL DEFAULT 'planning'
                             CHECK (status IN
-                                ('planning','awaiting_arrangements','confirmed','completed','cancelled')),
+                                ('planning','awaiting_arrangements','awaiting_safety_approval','confirmed','preparation','completed','cancelled')),
     confirmed_at         TIMESTAMPTZ,
     cancelled_at         TIMESTAMPTZ,
+    registration_capacity INTEGER CHECK (registration_capacity IS NULL OR registration_capacity > 0),
+    available_capacity   INTEGER CHECK (available_capacity IS NULL OR available_capacity >= 0),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (end_datetime > start_datetime)
@@ -221,6 +223,66 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_coordinator_id ON events(coordinator_id);
 CREATE INDEX IF NOT EXISTS idx_events_venue_id ON events(venue_id);
 CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+
+-- Attendee registrations are kept separate from venue bookings. A withdrawn
+-- registration stays as an audit record while releasing one available place.
+CREATE TABLE IF NOT EXISTS event_registrations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id        UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    attendee_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status          VARCHAR(40) NOT NULL DEFAULT 'confirmed'
+                        CHECK (status IN ('confirmed', 'awaiting_reconfirmation', 'withdrawn')),
+    confirmed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    withdrawn_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (event_id, attendee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_registrations_attendee ON event_registrations(attendee_id);
+CREATE INDEX IF NOT EXISTS idx_event_registrations_event_status ON event_registrations(event_id, status);
+-- Bring existing attendee-registration tables forward for reschedules.
+ALTER TABLE event_registrations ALTER COLUMN status TYPE VARCHAR(40);
+ALTER TABLE event_registrations DROP CONSTRAINT IF EXISTS event_registrations_status_check;
+ALTER TABLE event_registrations ADD CONSTRAINT event_registrations_status_check
+    CHECK (status IN ('confirmed', 'awaiting_reconfirmation', 'withdrawn'));
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_capacity INTEGER;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS available_capacity INTEGER;
+UPDATE events AS e
+SET registration_capacity = r.expected_attendance,
+    available_capacity = r.expected_attendance
+FROM event_requests AS r
+WHERE e.event_request_id = r.id
+  AND e.registration_capacity IS NULL
+  AND r.expected_attendance IS NOT NULL;
+
+-- Week 7 — Operational Safety Check.  This is the explicit approval gate
+-- between confirmed operational arrangements and preparation.  A decision is
+-- retained on the record so the coordinator and Safety Officer have an audit
+-- trail; a requested change may subsequently be resubmitted for re-review.
+ALTER TABLE events DROP CONSTRAINT IF EXISTS events_status_check;
+ALTER TABLE events ADD CONSTRAINT events_status_check CHECK (status IN
+    ('planning','awaiting_arrangements','awaiting_safety_approval','confirmed','preparation','completed','cancelled'));
+
+CREATE TABLE IF NOT EXISTS operational_safety_checks (
+    id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id                        UUID NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+    status                          VARCHAR(30) NOT NULL DEFAULT 'pending'
+                                        CHECK (status IN ('pending','approved','changes_requested','rejected')),
+    technical_arrangements_confirmed BOOLEAN NOT NULL DEFAULT false,
+    emergency_access                TEXT NOT NULL,
+    equipment_placement             TEXT NOT NULL,
+    crowd_movement                  TEXT NOT NULL,
+    venue_restrictions              TEXT,
+    requested_by                    UUID NOT NULL REFERENCES users(id),
+    requested_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_by                     UUID REFERENCES users(id),
+    reviewed_at                     TIMESTAMPTZ,
+    decision_reason                 TEXT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_operational_safety_checks_status ON operational_safety_checks(status);
 
 -- ---------------------------------------------------------------------
 -- EVENT PROGRAMMES & AGENDA ITEMS
@@ -485,6 +547,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+-- Event-change notices include before/after values and authenticated action
+-- links. Existing notification consumers can continue using `message`.
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata JSONB;
 -- Week 7: hold expiry reminders/expiry notices link back to the hold.
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS venue_hold_id UUID REFERENCES venue_holds(id) ON DELETE SET NULL;
 
@@ -555,7 +620,7 @@ DO $$
 DECLARE
     t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings','event_equipment_requests','equipment_reservations','event_change_requests']
+    FOREACH t IN ARRAY ARRAY['client_organisations','users','venues','equipment','event_requests','events','event_registrations','operational_safety_checks','event_programmes','agenda_items','venue_unavailability','venue_holds','venue_bookings','event_equipment_requests','equipment_reservations','event_change_requests']
     LOOP
         EXECUTE format(
             'DROP TRIGGER IF EXISTS trg_set_updated_at ON %I;

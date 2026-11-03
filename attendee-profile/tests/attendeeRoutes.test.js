@@ -30,6 +30,7 @@ describe('Attendee Routes & RBAC Integration', () => {
     firstName: 'Alex',
     lastName: 'Tan',
     phone: '+6591234567',
+    communicationPrefs: { preferredLanguage: 'en' },
     roleId: 5,
     isActive: true,
     createdAt: '2026-09-01T00:00:00.000Z',
@@ -220,5 +221,62 @@ describe('Attendee Routes & RBAC Integration', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Validation failed.');
     expect(res.body.details.some((d) => /email must be a valid/i.test(d.msg))).toBe(true);
+  });
+
+  describe('Notification preferences', () => {
+    beforeEach(() => {
+      mockAttendee.communicationPrefs = { preferredLanguage: 'en' };
+    });
+
+    test('returns defaults when no toggles have been saved', async () => {
+      const res = await request(app)
+        .get('/api/attendees/preferences')
+        .set('Authorization', `Bearer ${attendeeToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.notificationPreferences).toEqual({
+        emailNotifications: true,
+        inAppNotifications: true,
+      });
+    });
+
+    test('updates toggles and retains unrelated stored preferences', async () => {
+      const res = await request(app)
+        .patch('/api/attendees/preferences')
+        .set('Authorization', `Bearer ${attendeeToken}`)
+        .send({ emailNotifications: false, inAppNotifications: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.notificationPreferences).toEqual({
+        emailNotifications: false,
+        inAppNotifications: false,
+      });
+      expect(mockAttendee.update).toHaveBeenCalledWith({
+        communicationPrefs: {
+          preferredLanguage: 'en',
+          emailNotifications: false,
+          inAppNotifications: false,
+        },
+      });
+    });
+
+    test('rejects empty, unsupported, and non-boolean preference updates', async () => {
+      for (const body of [{}, { emailNotifications: 'yes' }, { department: 'Finance' }]) {
+        const res = await request(app)
+          .patch('/api/attendees/preferences')
+          .set('Authorization', `Bearer ${attendeeToken}`)
+          .send(body);
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('Validation failed.');
+      }
+    });
+
+    test('blocks non-attendee roles from notification preferences', async () => {
+      const res = await request(app)
+        .get('/api/attendees/preferences')
+        .set('Authorization', `Bearer ${organiserToken}`);
+
+      expect(res.status).toBe(403);
+    });
   });
 });

@@ -1,5 +1,5 @@
 // Request Changes to a Submitted Event — integration tests.
-const { sequelize, ROLE_NAMES, Event, EventRequest, EventChangeLog, EventChangeRequest, Notification } =
+const { sequelize, ROLE_NAMES, Event, EventRequest, EventChangeLog, EventChangeRequest, Notification, OperationalSafetyCheck } =
   require('../src/models');
 const { makeFixtures, auth, app, request } = require('./helpers/equipmentFixtures');
 
@@ -205,6 +205,31 @@ describe('Request Changes to a Submitted Event', () => {
       expect((await EventChangeRequest.findByPk(cr.id)).status).toBe('pending');
       expect((await Event.findByPk(ev.id)).startDatetime.toISOString()).toBe('2027-11-10T09:00:00.000Z');
       expect(await EventChangeLog.count({ where: { eventId: ev.id } })).toBe(0);
+    });
+
+    test('a material change invalidates prior safety approval and requires a new review', async () => {
+      const ev = await fresh();
+      await ev.update({ status: 'confirmed' });
+      await OperationalSafetyCheck.create({
+        eventId: ev.id,
+        status: 'approved',
+        technicalArrangementsConfirmed: true,
+        emergencyAccess: 'North exit',
+        equipmentPlacement: 'Cable covers in place',
+        crowdMovement: 'Managed entry lane',
+        requestedBy: coordinator.id,
+        requestedAt: new Date(),
+        reviewedBy: coordinator.id,
+        reviewedAt: new Date(),
+      });
+      const cr = (await submit(ev, { expectedAttendance: 75 })).body.changeRequest;
+
+      const res = await decide(cr, 'approve');
+      expect(res.status).toBe(200);
+      expect(res.body.reassessment.safetyReviewRequired).toBe(true);
+      await ev.reload();
+      expect(ev.status).toBe('awaiting_arrangements');
+      expect((await OperationalSafetyCheck.findOne({ where: { eventId: ev.id } })).status).toBe('changes_requested');
     });
   });
 

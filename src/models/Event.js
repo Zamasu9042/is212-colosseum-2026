@@ -20,7 +20,9 @@ Event.init(
       type: DataTypes.ENUM(
         'planning',
         'awaiting_arrangements',
+        'awaiting_safety_approval',
         'confirmed',
+        'preparation',
         'completed',
         'cancelled'
       ),
@@ -28,6 +30,16 @@ Event.init(
     },
     confirmedAt: { type: DataTypes.DATE, field: 'confirmed_at' },
     cancelledAt: { type: DataTypes.DATE, field: 'cancelled_at' },
+    registrationCapacity: {
+      type: DataTypes.INTEGER,
+      validate: { min: 1 },
+      field: 'registration_capacity',
+    },
+    availableCapacity: {
+      type: DataTypes.INTEGER,
+      validate: { min: 0 },
+      field: 'available_capacity',
+    },
     // Set by the venue conflict audit when this event's direct venue
     // (venueId) clashes under the updated rules. Nothing else is changed.
     venueConflictFlaggedAt: { type: DataTypes.DATE, field: 'venue_conflict_flagged_at' },

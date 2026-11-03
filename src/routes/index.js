@@ -9,6 +9,7 @@ const eventProgrammeRoutes = require('./eventProgrammeRoutes');
 const venueBookingRoutes = require('./venueBookingRoutes');
 const notificationRoutes = require('./notificationRoutes');
 const eventRoutes = require('./eventRoutes');
+const operationalSafetyCheckRoutes = require('./operationalSafetyCheckRoutes');
 const equipmentReservationRoutes = require('./equipmentReservationRoutes');
 const userRoutes = require('./userRoutes');
 const eventPlanningRoutes = require('./eventPlanningRoutes');
@@ -26,6 +27,7 @@ router.use('/venues', venueRoutes);
 router.use('/equipment', equipmentRoutes);
 router.use('/event-requests', eventRequestRoutes);
 router.use('/', eventRoutes);
+router.use('/', operationalSafetyCheckRoutes);
 router.use('/attendees', attendeeRoutes);
 // eventProgrammeRoutes defines its own full paths (e.g. '/events/:eventId/programme'),
 // so it's mounted at root rather than under a fixed prefix like the others.

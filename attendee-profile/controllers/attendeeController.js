@@ -1,4 +1,8 @@
 const { User } = require('../../src/models');
+const {
+  getNotificationPreferences,
+  mergeNotificationPreferences,
+} = require('../services/preferenceService');
 
 /**
  * GET /api/attendees/profile
@@ -71,7 +75,45 @@ async function updateProfile(req, res, next) {
   }
 }
 
+/** Retrieves the attendee's two notification toggles. */
+async function getPreferences(req, res, next) {
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user || !user.isActive) {
+      return res.status(404).json({ error: 'Attendee account not found or has been deactivated.' });
+    }
+
+    return res.status(200).json({
+      notificationPreferences: getNotificationPreferences(user.communicationPrefs),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Updates email and in-app notification toggles without altering other stored preferences. */
+async function updatePreferences(req, res, next) {
+  try {
+    const user = await User.findByPk(req.user.id);
+    if (!user || !user.isActive) {
+      return res.status(404).json({ error: 'Attendee account not found or has been deactivated.' });
+    }
+
+    const communicationPrefs = mergeNotificationPreferences(user.communicationPrefs, req.body);
+    await user.update({ communicationPrefs });
+
+    return res.status(200).json({
+      message: 'Notification preferences updated successfully.',
+      notificationPreferences: getNotificationPreferences(communicationPrefs),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getProfile,
   updateProfile,
+  getPreferences,
+  updatePreferences,
 };

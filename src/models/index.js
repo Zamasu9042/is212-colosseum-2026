@@ -13,6 +13,8 @@ const VenueHold = require('./VenueHold');
 const VenueUnavailability = require('./VenueUnavailability');
 const VenueBooking = require('./VenueBooking');
 const Notification = require('./Notification');
+const OperationalSafetyCheck = require('./OperationalSafetyCheck');
+const EventRegistration = require('./EventRegistration');
 const EquipmentReservation = require('./EquipmentReservation');
 const EventEquipmentRequest = require('./EventEquipmentRequest');
 const EventChangeLog = require('./EventChangeLog');
@@ -55,6 +57,16 @@ Event.belongsTo(User, { foreignKey: 'coordinatorId', as: 'coordinator' });
 // Venue <-> Event
 Venue.hasMany(Event, { foreignKey: 'venueId' });
 Event.belongsTo(Venue, { foreignKey: 'venueId' });
+
+// Event <-> EventRegistration
+Event.hasMany(EventRegistration, { foreignKey: 'eventId', as: 'registrations' });
+EventRegistration.belongsTo(Event, { foreignKey: 'eventId' });
+User.hasMany(EventRegistration, { foreignKey: 'attendeeId', as: 'eventRegistrations' });
+EventRegistration.belongsTo(User, { foreignKey: 'attendeeId', as: 'attendee' });
+
+// Event <-> OperationalSafetyCheck (one mandatory-gate record per event).
+Event.hasOne(OperationalSafetyCheck, { foreignKey: 'eventId', as: 'operationalSafetyCheck' });
+OperationalSafetyCheck.belongsTo(Event, { foreignKey: 'eventId' });
 
 // Event <-> EventProgramme (1:1)
 Event.hasOne(EventProgramme, { foreignKey: 'eventId', onDelete: 'CASCADE' });
@@ -143,6 +155,8 @@ module.exports = {
   VenueUnavailability,
   VenueBooking,
   Notification,
+  OperationalSafetyCheck,
+  EventRegistration,
   EquipmentReservation,
   EventEquipmentRequest,
   EventChangeLog,

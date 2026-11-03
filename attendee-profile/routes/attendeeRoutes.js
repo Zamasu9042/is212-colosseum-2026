@@ -4,7 +4,11 @@ const { authorize, ROLE_NAMES } = require('../../src/middleware/rbac');
 const { validateRequest } = require('../../src/middleware/validate');
 
 const attendeeController = require('../controllers/attendeeController');
-const { validateProfileUpdate } = require('../validators/attendeeValidator');
+const registrationRoutes = require('./registrationRoutes');
+const {
+  validateProfileUpdate,
+  validatePreferencesUpdate,
+} = require('../validators/attendeeValidator');
 
 const router = express.Router();
 
@@ -28,6 +32,24 @@ router.patch(
   validateProfileUpdate,
   validateRequest,
   attendeeController.updateProfile
+);
+
+router.use('/registrations', registrationRoutes);
+
+router.get(
+  '/preferences',
+  authenticate,
+  authorize(ROLE_NAMES.ATTENDEE),
+  attendeeController.getPreferences
+);
+
+router.patch(
+  '/preferences',
+  authenticate,
+  authorize(ROLE_NAMES.ATTENDEE),
+  validatePreferencesUpdate,
+  validateRequest,
+  attendeeController.updatePreferences
 );
 
 module.exports = router;
