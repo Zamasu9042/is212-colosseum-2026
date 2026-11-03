@@ -733,6 +733,32 @@ function safetySummaryCard(event, safety) {
   return card;
 }
 
+function registrationWindowCard(event) {
+  const ownsEvent = is('event_coordinator') && event.coordinatorId === session.user.id;
+  const configured = event.registrationStartDatetime && event.registrationEndDatetime;
+  const card = h('div', { class: 'card' }, h('div', { class: 'card-head' },
+    h('div', null, h('h2', null, 'Attendee registration'), h('div', { class: 'small muted' }, configured
+      ? `${fmtDT(event.registrationStartDatetime)} → ${fmtDT(event.registrationEndDatetime)}`
+      : 'No registration window is configured. Attendees cannot register.')),
+    ownsEvent ? h('button', { class: 'small primary', onclick: () => openDialog({
+      title: configured ? 'Edit registration window' : 'Configure registration window',
+      submitLabel: 'Save window',
+      build: (body) => body.append(
+        field('Registration opens', input('registrationStartDatetime', { type: 'datetime-local', required: true, value: toLocalInput(event.registrationStartDatetime) })),
+        field('Registration closes', input('registrationEndDatetime', { type: 'datetime-local', required: true, value: toLocalInput(event.registrationEndDatetime), max: toLocalInput(event.startDatetime) }), 'Must close on or before the event starts.')),
+      onSubmit: async (close) => {
+        const d = formData(document.querySelector('dialog form'));
+        await api(`/events/${event.id}`, { method: 'PATCH', body: {
+          registrationStartDatetime: fromLocalInput(d.registrationStartDatetime),
+          registrationEndDatetime: fromLocalInput(d.registrationEndDatetime),
+        } });
+        close(); toast('Registration window saved.', 'ok'); render();
+      },
+    }) }, configured ? 'Edit window' : 'Configure window') : null),
+    !configured ? alertBox('warn', 'Registration remains unavailable until you configure an opening and closing date.') : null);
+  return card;
+}
+
 route('/events/:id', async (root, id) => {
   const [detail, reqs, bookings, safety] = await Promise.all([
     api(`/events/${id}`),
@@ -761,6 +787,7 @@ route('/events/:id', async (root, id) => {
       h('dt', null, 'Equipment notes'), h('dd', null, er.equipmentRequirements || '—'),
       h('dt', null, 'Event request'), h('dd', null, is('event_coordinator', 'safety_officer') ? h('a', { href: `#/requests/${er.id}` }, 'View original request') : (er.category ? label(er.category) : '—')))),
     readinessCard(event, allocation), safetySummaryCard(event, safety)));
+  root.appendChild(registrationWindowCard(event));
 
   // ----- Equipment requests (SCRUM-24) -----
   const lineCard = h('div', { class: 'card', 'data-tour': 'ev-requests' }, h('div', { class: 'card-head' },
@@ -1393,8 +1420,21 @@ route('/registrations', async (root) => {
   const activeEventIds = new Set(registrations.filter((r) => r.status !== 'withdrawn').map((r) => r.eventId));
   const register = async (event) => {
     try {
-      await api('/attendees/registrations', { method: 'POST', body: { eventId: event.id } });
-      toast(`Registered for ${event.name}.`, 'ok'); render();
+      const { attendee } = await api('/attendees/profile');
+      openDialog({
+        title: `Register for ${event.name}`,
+        submitLabel: 'Confirm registration',
+        build: (body) => body.append(
+          h('p', { class: 'small muted' }, `Registration window: ${fmtDT(event.registrationStartDatetime)} → ${fmtDT(event.registrationEndDatetime)}`),
+          field('Full Name', input('fullName', { required: true, maxlength: 200, value: fullName(attendee) })),
+          field('Work Email', input('workEmail', { type: 'email', required: true, value: attendee.email || '' })),
+          field('Contact Number', input('contactNumber', { type: 'tel', required: true, pattern: '\\+?[0-9]{7,15}', value: attendee.phone || '' }), '7–15 digits; an optional leading + is allowed.')),
+        onSubmit: async (close) => {
+          const d = formData(document.querySelector('dialog form'));
+          await api('/attendees/registrations', { method: 'POST', body: { eventId: event.id, ...d } });
+          close(); toast(`Registered for ${event.name}.`, 'ok'); render();
+        },
+      });
     } catch (err) { toast(err.message, 'error'); }
   };
   const withdraw = async (registration) => {
@@ -1413,8 +1453,11 @@ route('/registrations', async (root) => {
     h('div', { class: 'card' }, h('h2', null, 'Upcoming events'), table([
       { title: 'Event', render: (e) => h('strong', null, e.name) },
       { title: 'When', render: (e) => fmtDT(e.startDatetime) },
+      { title: 'Registration window', render: (e) => e.registrationStartDatetime && e.registrationEndDatetime ? fmtRange(e.registrationStartDatetime, e.registrationEndDatetime) : 'Not configured' },
       { title: 'Places', render: (e) => `${e.availableCapacity} of ${e.registrationCapacity} available` },
-      { title: '', render: (e) => activeEventIds.has(e.id) ? pill('active', 'Registered') : h('button', { class: 'small primary', disabled: e.availableCapacity < 1, onclick: () => register(e) }, e.availableCapacity < 1 ? 'Full' : 'Register') },
+      { title: '', render: (e) => activeEventIds.has(e.id) ? pill('active', 'Registered') : h('div', { class: 'actions' },
+        h('button', { class: 'small primary', disabled: !e.registrationOpen, onclick: () => register(e) }, e.registrationOpen ? 'Register' : (e.registrationUnavailableReason === 'Event Full' ? 'Event Full' : 'Registration unavailable')),
+        e.registrationOpen ? null : h('span', { class: 'small muted' }, e.registrationUnavailableReason)) },
     ], events, { empty: 'No upcoming events are open for registration.' })),
     h('div', { class: 'card' }, h('h2', null, 'My registrations'), table([
       { title: 'Event', render: (r) => h('strong', null, r.event?.name || 'Event') },

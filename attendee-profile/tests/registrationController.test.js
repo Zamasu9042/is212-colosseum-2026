@@ -31,6 +31,8 @@ describe('Attendee registration withdrawal', () => {
       id: '22222222-2222-2222-2222-222222222222',
       status: 'confirmed',
       startDatetime,
+      registrationStartDatetime: new Date(now.getTime() - 60 * 60 * 1000),
+      registrationEndDatetime: new Date(now.getTime() + 30 * 60 * 1000),
       registrationCapacity: 10,
       availableCapacity: 5,
       EventRequest: { eventName: 'ConnectSphere Demo', expectedAttendance: 10 },
@@ -88,10 +90,11 @@ describe('Attendee registration withdrawal', () => {
     EventRegistration.create.mockResolvedValue(registration);
     const res = response();
 
-    await createRegistration({ body: { eventId: event.id }, user: attendee }, res, jest.fn());
+    await createRegistration({ body: { eventId: event.id, fullName: 'Attendee Example', workEmail: attendee.email, contactNumber: '+6591234567' }, user: attendee }, res, jest.fn());
 
     expect(EventRegistration.create).toHaveBeenCalledWith(expect.objectContaining({
       eventId: event.id, attendeeId: attendee.id, status: 'confirmed',
+      fullName: 'Attendee Example', workEmail: attendee.email, contactNumber: '+6591234567',
     }), expect.any(Object));
     expect(event.update).toHaveBeenCalledWith({ availableCapacity: 5 }, expect.any(Object));
     expect(res.status).toHaveBeenCalledWith(201);
@@ -133,7 +136,7 @@ describe('Attendee registration withdrawal', () => {
     await listRegisterableEvents({ user: attendee }, res, jest.fn());
 
     expect(res.json).toHaveBeenCalledWith({ events: [expect.objectContaining({
-      id: event.id, name: 'ConnectSphere Demo', registrationCapacity: 10, availableCapacity: 3,
+      id: event.id, name: 'ConnectSphere Demo', registrationCapacity: 10, availableCapacity: 3, registrationOpen: true,
     })] });
   });
 });
