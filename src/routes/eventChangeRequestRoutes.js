@@ -34,6 +34,7 @@ const {
   snapshotFields,
   applyEventChanges,
 } = require('../services/eventChangeService');
+const { notifyEventChange, sendEventChangeEmails } = require('../services/eventChangeNotificationService');
 
 const router = express.Router();
 
@@ -54,6 +55,24 @@ const eventInclude = {
   model: Event,
   include: [{ model: EventRequest, attributes: ['id', 'eventName', 'organiserId'] }],
 };
+
+// Event Organisers need a safe discovery list for the browser change-request
+// screen. The internal /events endpoints deliberately exclude organisers.
+router.get(
+  '/organiser-events',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_ORGANISER),
+  async (req, res, next) => {
+    try {
+      const events = await Event.findAll({
+        include: [{ model: EventRequest, where: { organiserId: req.user.id } }],
+        where: { status: { [Op.notIn]: CLOSED_EVENT_STATUSES } },
+        order: [['start_datetime', 'ASC']],
+      });
+      res.json({ events, count: events.length });
+    } catch (err) { next(err); }
+  }
+);
 
 function sendError(err, res, next) {
   if (err instanceof EventChangeError) {
@@ -275,6 +294,14 @@ router.post(
           changeRequestId: changeRequest.id,
           transaction,
         });
+        const attendeeNotification = applied.changed
+          ? await notifyEventChange({
+            event,
+            changes: applied.changes,
+            eventName: eventName(event),
+            transaction,
+          })
+          : { changes: [], recipients: [], emailRecipients: [] };
         await changeRequest.update(
           {
             status: 'approved',
@@ -295,16 +322,26 @@ router.post(
           },
           { transaction }
         );
-        return applied;
+        return { ...applied, attendeeNotification };
       });
 
       await event.reload({ include: [{ model: EventRequest }] });
+      const emailDelivery = await sendEventChangeEmails({
+        eventName: eventName(event),
+        changes: result.attendeeNotification.changes,
+        emailRecipients: result.attendeeNotification.emailRecipients || [],
+      });
       res.json({
         changeRequest,
         changeType: result.changeType,
         changes: result.changes,
         reassessment: result.reassessment,
         event,
+        recipients: result.attendeeNotification.recipients?.length || 0,
+        email: {
+          attempted: (result.attendeeNotification.emailRecipients || []).length,
+          failed: emailDelivery.filter((delivery) => delivery.status === 'rejected').length,
+        },
       });
     } catch (err) {
       sendError(err, res, next);

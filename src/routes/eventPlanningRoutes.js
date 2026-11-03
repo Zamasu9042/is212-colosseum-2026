@@ -20,6 +20,7 @@ const { authenticate } = require('../middleware/auth');
 const { authorize, ROLE_NAMES } = require('../middleware/rbac');
 const { validateRequest } = require('../middleware/validate');
 const { EventChangeError, EDITABLE_FIELDS, applyEventChanges } = require('../services/eventChangeService');
+const { notifyEventChange, sendEventChangeEmails } = require('../services/eventChangeNotificationService');
 
 const router = express.Router();
 
@@ -80,24 +81,46 @@ router.patch(
       if (!event) return res.status(404).json({ error: 'Event not found.' });
       if (event.coordinatorId !== req.user.id) return res.status(403).json(FORBIDDEN);
 
-      const result = await sequelize.transaction((transaction) =>
-        applyEventChanges({
+      const result = await sequelize.transaction(async (transaction) => {
+        const applied = await applyEventChanges({
           event,
           input,
           actor: req.user,
           source: 'coordinator_update',
           reason: req.body.reason,
           transaction,
-        })
-      );
+        });
+        const eventName = event.EventRequest?.eventName || 'Your event';
+        const notification = applied.changed
+          ? await notifyEventChange({
+            event,
+            changes: applied.changes,
+            eventName,
+            transaction,
+          })
+          : { changes: [], recipients: [], emailRecipients: [] };
+        return { ...applied, notification, eventName };
+      });
 
       await event.reload({ include: [{ model: EventRequest }] });
+      // Email follows a successful commit; a delivery failure must not undo
+      // the event update or its in-app notification.
+      const emailDelivery = await sendEventChangeEmails({
+        eventName: result.eventName,
+        changes: result.notification.changes,
+        emailRecipients: result.notification.emailRecipients || [],
+      });
       res.json({
         changed: result.changed,
         changeType: result.changeType,
         changes: result.changes,
         reassessment: result.reassessment,
         event,
+        recipients: result.notification.recipients?.length || 0,
+        email: {
+          attempted: (result.notification.emailRecipients || []).length,
+          failed: emailDelivery.filter((delivery) => delivery.status === 'rejected').length,
+        },
         message: result.changed ? 'Event updated.' : 'No changes: the values already match.',
       });
     } catch (err) {

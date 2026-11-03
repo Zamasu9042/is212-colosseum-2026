@@ -243,8 +243,8 @@ function navFor(r) {
   const common = [n('/', 'Dashboard')];
   const tail = [n('/notifications', 'Notifications', 'notifications'), n('/help', 'Help & tutorials')];
   const byRole = {
-    event_organiser: [n('/requests', 'My event requests'), n('/requests/new', 'New request'), n('/venues', 'Venues')],
-    event_coordinator: [n('/review', 'Review queue'), n('/events', 'My events'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule'), n('/equipment', 'Equipment')],
+    event_organiser: [n('/requests', 'My event requests'), n('/requests/new', 'New request'), n('/changes', 'Change requests'), n('/venues', 'Venues')],
+    event_coordinator: [n('/review', 'Review queue'), n('/changes', 'Change requests'), n('/events', 'My events'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule'), n('/equipment', 'Equipment')],
     event_coordinator_lead: [n('/assign', 'Assign requests'), n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
     venue_staff: [n('/venue-bookings', 'Booking queue'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule')],
     technical_support_staff: [n('/equipment', 'Equipment catalogue'), n('/events', 'Events & reservations')],
@@ -614,6 +614,84 @@ route('/review', async (root) => {
   ], eventRequests, { onRow: (r) => go(`/requests/${r.id}`), empty: 'Nothing waiting for your review.' })));
 }, { roles: ['event_coordinator'] });
 
+function changeSummary(change) {
+  return Object.entries(change.proposedChanges || {}).map(([field, value]) => `${fieldLabel(field)} → ${field.includes('Datetime') ? fmtDT(value) : value}`).join('; ') || 'No details';
+}
+
+function requestChangeDialog(event) {
+  openDialog({
+    title: `Request changes — ${event.EventRequest?.eventName || 'Event'}`,
+    submitLabel: 'Send change request', wide: true,
+    build: (body) => append(body, [
+      alertBox('info', 'Only changed fields are sent. The assigned Coordinator must approve before the event changes.'),
+      h('div', { class: 'form-grid' },
+        field('New start (optional)', input('startDatetime', { type: 'datetime-local', value: toLocalInput(event.startDatetime) })),
+        field('New end (optional)', input('endDatetime', { type: 'datetime-local', value: toLocalInput(event.endDatetime) })),
+        field('Expected attendance', input('expectedAttendance', { type: 'number', min: 1, value: event.EventRequest?.expectedAttendance || '' }))),
+      field('Venue requirements', h('textarea', { name: 'venueRequirements' }, event.EventRequest?.venueRequirements || '')),
+      field('Equipment requirements', h('textarea', { name: 'equipmentRequirements' }, event.EventRequest?.equipmentRequirements || '')),
+      field('Reason (optional)', h('textarea', { name: 'reason', placeholder: 'Why is this change needed?' })),
+    ]),
+    onSubmit: async (close) => {
+      const d = formData(document.querySelector('dialog form'));
+      const body = {};
+      const start = fromLocalInput(d.startDatetime); const end = fromLocalInput(d.endDatetime);
+      if (start && new Date(start).getTime() !== new Date(event.startDatetime).getTime()) body.startDatetime = start;
+      if (end && new Date(end).getTime() !== new Date(event.endDatetime).getTime()) body.endDatetime = end;
+      const attendance = Number(d.expectedAttendance);
+      if (attendance && attendance !== event.EventRequest?.expectedAttendance) body.expectedAttendance = attendance;
+      if (d.venueRequirements.trim() !== (event.EventRequest?.venueRequirements || '')) body.venueRequirements = d.venueRequirements;
+      if (d.equipmentRequirements.trim() !== (event.EventRequest?.equipmentRequirements || '')) body.equipmentRequirements = d.equipmentRequirements;
+      if (d.reason.trim()) body.reason = d.reason.trim();
+      if (!Object.keys(body).some((key) => key !== 'reason')) throw new Error('Change at least one event detail before submitting.');
+      await api(`/events/${event.id}/change-requests`, { method: 'POST', body });
+      close(); toast('Change request sent to the assigned Coordinator.', 'ok'); render();
+    },
+  });
+}
+
+function decideChangeDialog(change, action) {
+  const reject = action === 'reject';
+  openDialog({
+    title: reject ? 'Reject change request' : 'Approve change request',
+    submitLabel: reject ? 'Reject' : 'Approve', danger: reject,
+    build: (body) => body.appendChild(field(reject ? 'Reason (required)' : 'Review note (optional)', h('textarea', { name: 'reviewReason', required: reject }))),
+    onSubmit: async (close) => {
+      const reviewReason = document.querySelector('dialog textarea[name=reviewReason]').value.trim();
+      await api(`/event-change-requests/${change.id}/${action}`, { method: 'POST', body: reviewReason ? { reviewReason } : {} });
+      close(); toast(`Change request ${reject ? 'rejected' : 'approved'}.`, 'ok'); render();
+    },
+  });
+}
+
+route('/changes', async (root) => {
+  if (is('event_organiser')) {
+    const [{ events }, { changeRequests }] = await Promise.all([api('/organiser-events'), api('/event-change-requests', { query: { status: 'all' } })]);
+    root.append(pageHead('Change requests', 'Request updates to your active events. The assigned Coordinator reviews every request.'),
+      h('div', { class: 'card' }, h('h2', null, 'My active events'), table([
+        { title: 'Event', render: (e) => h('strong', null, e.EventRequest?.eventName || 'Untitled event') },
+        { title: 'When', render: (e) => fmtRange(e.startDatetime, e.endDatetime) },
+        { title: 'Status', render: (e) => pill(e.status) },
+        { title: '', render: (e) => h('button', { class: 'small primary', onclick: () => requestChangeDialog(e) }, 'Request change') },
+      ], events, { empty: 'You have no active events that can be changed.' })),
+      h('div', { class: 'card' }, h('h2', null, 'My submitted change requests'), table([
+        { title: 'Event', render: (c) => c.Event?.EventRequest?.eventName || 'Event' },
+        { title: 'Requested changes', render: changeSummary },
+        { title: 'Status', render: (c) => pill(c.status) },
+        { title: '', render: (c) => c.status === 'pending' ? h('button', { class: 'small danger', onclick: async () => { await api(`/event-change-requests/${c.id}/withdraw`, { method: 'POST' }); toast('Change request withdrawn.', 'ok'); render(); } }, 'Withdraw') : (c.reviewReason || '') },
+      ], changeRequests, { empty: 'You have not submitted any change requests.' })));
+  } else {
+    const { changeRequests } = await api('/event-change-requests', { query: { status: 'pending' } });
+    root.append(pageHead('Change requests', 'Pending requests for events assigned to you.'), h('div', { class: 'card' }, table([
+      { title: 'Event', render: (c) => h('strong', null, c.Event?.EventRequest?.eventName || 'Event') },
+      { title: 'Organiser', render: (c) => fullName(c.requester) },
+      { title: 'Requested changes', render: changeSummary },
+      { title: 'Reason', render: (c) => c.reason || '—' },
+      { title: '', render: (c) => h('div', { class: 'actions' }, h('button', { class: 'small primary', onclick: () => decideChangeDialog(c, 'approve') }, 'Approve'), h('button', { class: 'small danger', onclick: () => decideChangeDialog(c, 'reject') }, 'Reject')) },
+    ], changeRequests, { empty: 'No pending change requests.' })));
+  }
+}, { roles: ['event_organiser', 'event_coordinator'] });
+
 route('/assign', async (root) => {
   const [unassigned, assigned, coords] = await Promise.all([
     api('/event-requests/unassigned'), api('/event-requests/assignments'), api('/users', { query: { role: 'event_coordinator' } }),
@@ -652,9 +730,9 @@ const RESERVABLE_EVENT = ['planning', 'awaiting_arrangements', 'confirmed'];
 route('/events', async (root) => {
   const q = hashQuery();
   const status = q.get('status') || 'live';
-  const query = status === 'live' ? { status: 'planning,awaiting_arrangements,confirmed' } : status === 'all' ? {} : { status };
+  const query = status === 'live' ? { status: 'planning,awaiting_arrangements,confirmed,preparation' } : status === 'all' ? {} : { status };
   const { events } = await api('/events', { query });
-  const chips = [['live', 'Upcoming & active'], ['planning', 'Planning'], ['confirmed', 'Confirmed'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['all', 'All']];
+  const chips = [['live', 'Upcoming & active'], ['planning', 'Planning'], ['confirmed', 'Confirmed'], ['preparation', 'Preparation'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['all', 'All']];
   root.append(
     pageHead(is('event_coordinator') ? 'My events' : 'Events', is('technical_support_staff') ? 'Open an event to reserve equipment for its time window.' : null),
     h('div', { class: 'card', 'data-tour': 'events-list' },

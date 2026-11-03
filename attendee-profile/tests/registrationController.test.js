@@ -9,7 +9,9 @@ jest.mock('../../src/services/emailService', () => ({ sendWithdrawalEmail: jest.
 
 const { sequelize, Event, EventRegistration, Notification } = require('../../src/models');
 const { sendWithdrawalEmail } = require('../../src/services/emailService');
-const { createRegistration, withdrawRegistration, listRegisterableEvents, canWithdraw } = require('../controllers/registrationController');
+const {
+  createRegistration, withdrawRegistration, reconfirmRegistration, listRegisterableEvents, canWithdraw,
+} = require('../controllers/registrationController');
 
 function response() {
   const res = {};
@@ -111,6 +113,24 @@ describe('Attendee registration withdrawal', () => {
     expect(registration.update).not.toHaveBeenCalled();
     expect(canWithdraw(registration, event)).toBe(false);
     expect(sendWithdrawalEmail).not.toHaveBeenCalled();
+  });
+
+  test('allows an existing attendee to reconfirm or withdraw while a rescheduled event is reassessed', async () => {
+    const event = buildEvent();
+    event.status = 'awaiting_arrangements';
+    const registration = buildRegistration();
+    registration.status = 'awaiting_reconfirmation';
+    EventRegistration.findByPk.mockResolvedValueOnce(registration).mockResolvedValueOnce(registration);
+    Event.findByPk.mockResolvedValue(event);
+    const res = response();
+
+    await reconfirmRegistration({ params: { id: registration.id }, user: attendee }, res, jest.fn());
+
+    expect(registration.update).toHaveBeenCalledWith({ status: 'confirmed' }, expect.any(Object));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      registration: expect.objectContaining({ status: 'confirmed' }),
+    }));
+    expect(canWithdraw({ ...registration, status: 'awaiting_reconfirmation' }, event)).toBe(true);
   });
 
   test('does not expose a different attendee registration', async () => {

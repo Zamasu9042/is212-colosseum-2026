@@ -1,5 +1,5 @@
 // Request Changes to a Submitted Event — integration tests.
-const { sequelize, ROLE_NAMES, Event, EventRequest, EventChangeLog, EventChangeRequest, Notification, OperationalSafetyCheck } =
+const { sequelize, ROLE_NAMES, Event, EventRequest, EventChangeLog, EventChangeRequest, EventRegistration, Notification, OperationalSafetyCheck } =
   require('../src/models');
 const { makeFixtures, auth, app, request } = require('./helpers/equipmentFixtures');
 
@@ -94,6 +94,19 @@ describe('Request Changes to a Submitted Event', () => {
   });
 
   describe('viewing', () => {
+    test('organiser can discover only their own active events for the change-request screen', async () => {
+      const own = await fresh();
+      const other = await fx.makeEvent({
+        organiser: otherOrganiser, coordinator: otherCoordinator,
+        start: '2027-11-04T09:00:00Z', end: '2027-11-04T12:00:00Z', name: 'Other organiser event',
+      });
+      const res = await request(app).get('/api/organiser-events').set(auth(tOrg));
+      expect(res.status).toBe(200);
+      expect(res.body.events.map((event) => event.id)).toContain(own.id);
+      expect(res.body.events.map((event) => event.id)).not.toContain(other.id);
+      expect(res.body.events.find((event) => event.id === own.id).EventRequest.eventName).toContain('Event');
+    });
+
     test('coordinator queue shows own events only; organiser sees own; others blocked', async () => {
       const ev = await fresh();
       const cr = (await submit(ev, { expectedAttendance: 65 })).body.changeRequest;
@@ -122,6 +135,11 @@ describe('Request Changes to a Submitted Event', () => {
   describe('coordinator decision', () => {
     test('approving applies the change, logs it, flags reassessment and notifies the organiser', async () => {
       const ev = await fresh();
+      const attendee = await fx.createUser(ROLE_NAMES.ATTENDEE, 'change-attendee');
+      const attendeeToken = await fx.login(attendee);
+      const registration = await EventRegistration.create({
+        eventId: ev.id, attendeeId: attendee.id, status: 'confirmed', confirmedAt: new Date(),
+      });
       const cr = (await submit(ev, {
         startDatetime: '2027-11-03T09:00:00Z',
         endDatetime: '2027-11-03T17:00:00Z',
@@ -152,6 +170,28 @@ describe('Request Changes to a Submitted Event', () => {
         where: { userId: organiser.id, eventId: ev.id, type: 'event_change_approved' },
       });
       expect(note).not.toBeNull();
+
+      // Registered attendees receive the approved date change as well, and
+      // must acknowledge the new schedule before attending.
+      await registration.reload();
+      expect(registration.status).toBe('awaiting_reconfirmation');
+      const attendeeNotice = await Notification.findOne({
+        where: { userId: attendee.id, eventId: ev.id, type: 'event_changed' },
+      });
+      expect(attendeeNotice.metadata).toMatchObject({ requiresReconfirmation: true });
+      expect(attendeeNotice.metadata.changes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ field: 'startDatetime' }),
+        expect.objectContaining({ field: 'endDatetime' }),
+        expect.objectContaining({ field: 'expectedAttendance' }),
+      ]));
+      // An approved material change temporarily puts the event back into
+      // arrangements, but attendees can still act on the reconfirmation
+      // request while new registrations remain closed.
+      const reconfirm = await request(app)
+        .post(`/api/attendees/registrations/${registration.id}/reconfirm`)
+        .set(auth(attendeeToken));
+      expect(reconfirm.status).toBe(200);
+      expect(reconfirm.body.registration.status).toBe('confirmed');
 
       // a decided request cannot be decided again
       expect((await decide(cr, 'approve')).status).toBe(409);

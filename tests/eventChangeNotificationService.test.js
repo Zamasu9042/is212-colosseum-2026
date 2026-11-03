@@ -8,7 +8,7 @@ jest.mock('../src/services/emailService', () => ({ sendEventChangeEmail: jest.fn
 const { EventRegistration, Notification } = require('../src/models');
 const { sendEventChangeEmail } = require('../src/services/emailService');
 const {
-  eventChanges, notifyEventChange, sendEventChangeEmails,
+  eventChanges, loggedChanges, notifyEventChange, sendEventChangeEmails,
 } = require('../src/services/eventChangeNotificationService');
 
 describe('event change notification details', () => {
@@ -33,6 +33,18 @@ describe('event change notification details', () => {
     expect(changes.find(({ field }) => field === 'status')).toMatchObject({
       before: 'confirmed', after: 'cancelled',
     });
+  });
+
+  test('converts approved planning and change-request edits into attendee-facing details', () => {
+    expect(loggedChanges({
+      description: { from: null, to: 'Arrive ten minutes early' },
+      registrationRequired: { from: false, to: true },
+      startDatetime: { from: '2027-08-01T10:00:00.000Z', to: '2027-08-02T10:00:00.000Z' },
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'description', label: 'Description', before: 'Not specified' }),
+      expect.objectContaining({ field: 'registrationRequired', before: 'No', after: 'Yes' }),
+      expect.objectContaining({ field: 'startDatetime', label: 'Start time' }),
+    ]));
   });
 
   test('creates only opted-in in-app notices and sends eligible recipients the action links', async () => {

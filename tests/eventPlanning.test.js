@@ -1,5 +1,5 @@
 // Manage Event Information During Planning — integration tests.
-const { sequelize, ROLE_NAMES, Event, EventRequest, VenueBooking, Notification } = require('../src/models');
+const { sequelize, ROLE_NAMES, Event, EventRequest, EventRegistration, VenueBooking, Notification } = require('../src/models');
 const { makeFixtures, auth, app, request } = require('./helpers/equipmentFixtures');
 
 const fx = makeFixtures('plan');
@@ -24,7 +24,7 @@ describe('Manage Event Information During Planning', () => {
     [tCoord, tOther, tLead, tOrg, tOtherOrg, tTech, tVenue] = await Promise.all(
       [coordinator, otherCoordinator, lead, organiser, otherOrganiser, tech, venueStaff].map(fx.login)
     );
-  });
+  }, 30000);
 
   afterAll(async () => {
     await sequelize.close();
@@ -33,10 +33,15 @@ describe('Manage Event Information During Planning', () => {
   describe('editing event information', () => {
     test('an ordinary change updates the record, is logged, and does not flag reassessment', async () => {
       const ev = await fresh();
-      const res = await patch(ev, { eventName: 'Renamed Summit', layout: 'Theatre', reason: 'Branding' });
+      const res = await patch(ev, {
+        eventName: 'Renamed Summit',
+        description: 'Updated event description',
+        reason: 'Branding',
+      });
       expect(res.status).toBe(200);
       expect(res.body.changeType).toBe('ordinary');
       expect(res.body.changes.eventName.to).toBe('Renamed Summit');
+      expect(res.body.changes.description.to).toBe('Updated event description');
       expect(res.body.reassessment).toBeNull();
       const request_ = await EventRequest.findByPk(ev.eventRequestId);
       expect(request_.eventName).toBe('Renamed Summit');
@@ -63,6 +68,14 @@ describe('Manage Event Information During Planning', () => {
       const er = await EventRequest.findByPk(ev.eventRequestId);
       expect(er.expectedAttendance).toBe(90);
       expect(er.preferredStart.toISOString()).toBe('2027-10-02T10:00:00.000Z');
+    });
+
+    test('a layout change is material and requires reassessment', async () => {
+      const ev = await fresh();
+      const res = await patch(ev, { layout: 'Theatre' });
+      expect(res.status).toBe(200);
+      expect(res.body.changeType).toBe('major');
+      expect(res.body.reassessment.majorFields).toContain('layout');
     });
 
     test('major change reports affected venue bookings without altering them', async () => {
@@ -105,6 +118,25 @@ describe('Manage Event Information During Planning', () => {
       expect(await Notification.count({ where: { userId: organiser.id, eventId: ev.id } })).toBe(0);
       await patch(ev, { expectedAttendance: 75 });
       expect(await Notification.count({ where: { userId: organiser.id, eventId: ev.id, type: 'event_updated' } })).toBe(1);
+    });
+
+    test('registered attendees are notified of every approved planning edit', async () => {
+      const ev = await fresh();
+      const attendee = await fx.createUser(ROLE_NAMES.ATTENDEE, 'planning-attendee');
+      await EventRegistration.create({
+        eventId: ev.id, attendeeId: attendee.id, status: 'confirmed', confirmedAt: new Date(),
+      });
+
+      const res = await patch(ev, { description: 'Updated arrival instructions' });
+      expect(res.status).toBe(200);
+      expect(res.body.recipients).toBe(1);
+      const notice = await Notification.findOne({
+        where: { userId: attendee.id, eventId: ev.id, type: 'event_changed' },
+      });
+      expect(notice.metadata).toMatchObject({ requiresReconfirmation: false });
+      expect(notice.metadata.changes).toEqual([
+        expect.objectContaining({ field: 'description', after: 'Updated arrival instructions' }),
+      ]);
     });
 
     test('sending the same values changes nothing and writes no log entry', async () => {

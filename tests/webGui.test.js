@@ -42,6 +42,10 @@ describe('Web GUI hosting', () => {
     expect(appJs.text).toContain('/attendees/preferences');
     expect(appJs.text).toContain('Email notifications');
     expect(appJs.text).toContain('metadata?.actions');
+    expect(appJs.text).toContain("n('/changes', 'Change requests')");
+    expect(appJs.text).toContain('Request change');
+    expect(appJs.text).toContain("status: 'planning,awaiting_arrangements,confirmed,preparation'");
+    expect(appJs.text).toContain("['preparation', 'Preparation']");
   });
 
   test('deep links fall back to index.html', async () => {

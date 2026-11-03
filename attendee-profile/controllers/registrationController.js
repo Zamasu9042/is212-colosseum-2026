@@ -10,6 +10,15 @@ const { sendWithdrawalEmail } = require('../../src/services/emailService');
 const { ACTIVE_REGISTRATION_STATUSES } = require('../../src/services/eventChangeNotificationService');
 
 const REGISTRABLE_EVENT_STATUSES = ['confirmed', 'preparation'];
+// A material approved change temporarily returns an event to arrangements or
+// safety review. Existing attendees must still be able to act on the
+// reschedule notice, even though new registrations remain closed until the
+// event is confirmed again.
+const EXISTING_REGISTRATION_ACTION_STATUSES = [
+  ...REGISTRABLE_EVENT_STATUSES,
+  'awaiting_arrangements',
+  'awaiting_safety_approval',
+];
 
 function isBeforeStart(event, now = new Date()) {
   return new Date(event.startDatetime) > now;
@@ -17,7 +26,7 @@ function isBeforeStart(event, now = new Date()) {
 
 function canWithdraw(registration, event, now = new Date()) {
   return ACTIVE_REGISTRATION_STATUSES.includes(registration.status) &&
-    REGISTRABLE_EVENT_STATUSES.includes(event.status) &&
+    EXISTING_REGISTRATION_ACTION_STATUSES.includes(event.status) &&
     isBeforeStart(event, now);
 }
 
@@ -70,7 +79,7 @@ function serializeRegistration(registration, event) {
     },
     canWithdraw: canWithdraw(registration, event),
     canReconfirm: registration.status === 'awaiting_reconfirmation' &&
-      REGISTRABLE_EVENT_STATUSES.includes(event.status) && isBeforeStart(event),
+      EXISTING_REGISTRATION_ACTION_STATUSES.includes(event.status) && isBeforeStart(event),
   };
 }
 
@@ -222,7 +231,7 @@ async function reconfirmRegistration(req, res, next) {
       if (registration.status !== 'awaiting_reconfirmation') {
         const error = new Error('This registration does not require re-confirmation.'); error.status = 409; throw error;
       }
-      if (!REGISTRABLE_EVENT_STATUSES.includes(event.status) || !isBeforeStart(event)) {
+      if (!EXISTING_REGISTRATION_ACTION_STATUSES.includes(event.status) || !isBeforeStart(event)) {
         const error = new Error('This event can no longer be re-confirmed.'); error.status = 409; throw error;
       }
       await registration.update({ status: 'confirmed' }, { transaction });

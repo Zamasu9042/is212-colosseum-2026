@@ -18,6 +18,16 @@ const eventIncludes = [
 
 const EVENT_UPDATE_FIELDS = ['startDatetime', 'endDatetime', 'venueId', 'status'];
 const EVENT_STATUSES = ['planning', 'awaiting_arrangements', 'awaiting_safety_approval', 'confirmed', 'preparation', 'completed', 'cancelled'];
+// Planning owns the richer event-information contract. This router remains
+// responsible for operational lifecycle/venue updates, but must yield when a
+// request includes fields owned by the planning route (both routers share
+// PATCH /events/:id).
+const PLANNING_ONLY_FIELDS = new Set([
+  'eventName', 'description', 'purpose', 'category', 'expectedAttendance',
+  'venueRequirements', 'requestedLayout', 'accessibilityRequirements',
+  'facilityRequirements', 'setupRequirements', 'equipmentRequirements',
+  'layout', 'registrationSetup', 'registrationRequired', 'reason',
+]);
 
 function eventSnapshot(event) {
   return {
@@ -141,6 +151,7 @@ router.patch(
   validateRequest,
   async (req, res, next) => {
     try {
+      if (Object.keys(req.body).some((field) => PLANNING_ONLY_FIELDS.has(field))) return next();
       const updates = pickEventUpdate(req.body);
       if (!Object.keys(updates).length) {
         return res.status(400).json({ error: 'Provide at least one of: startDatetime, endDatetime, venueId, status.' });

@@ -26,6 +26,46 @@ function eventChanges(before, after) {
   return changes;
 }
 
+const FIELD_LABELS = {
+  eventName: 'Event name',
+  description: 'Description',
+  purpose: 'Purpose',
+  category: 'Category',
+  startDatetime: 'Start time',
+  endDatetime: 'End time',
+  expectedAttendance: 'Expected attendance',
+  venueRequirements: 'Venue requirements',
+  requestedLayout: 'Requested layout',
+  accessibilityRequirements: 'Accessibility requirements',
+  facilityRequirements: 'Facility requirements',
+  setupRequirements: 'Setup requirements',
+  equipmentRequirements: 'Equipment requirements',
+  layout: 'Layout',
+  registrationSetup: 'Registration setup',
+  registrationRequired: 'Registration required',
+  venueId: 'Venue',
+  status: 'Status',
+};
+
+function displayValue(field, value) {
+  if (value == null || value === '') return 'Not specified';
+  if (field === 'startDatetime' || field === 'endDatetime') return formatDateTime(value);
+  if (field === 'registrationRequired') return value ? 'Yes' : 'No';
+  return String(value);
+}
+
+// The planning/change-request service already produces authoritative old/new
+// values. Convert them into the same attendee-facing shape used by the
+// operational event update route, so no approved edit can bypass notices.
+function loggedChanges(changes) {
+  return Object.entries(changes || {}).map(([field, value]) => ({
+    field,
+    label: FIELD_LABELS[field] || field,
+    before: displayValue(field, value.from),
+    after: displayValue(field, value.to),
+  }));
+}
+
 function registrationActions(registrationId) {
   const base = `/api/attendees/registrations/${registrationId}`;
   return [
@@ -34,8 +74,8 @@ function registrationActions(registrationId) {
   ];
 }
 
-async function notifyEventChange({ event, before, eventName, transaction }) {
-  const changes = eventChanges(before, event);
+async function notifyEventChange({ event, before, changes: suppliedChanges, eventName, transaction }) {
+  const changes = suppliedChanges ? loggedChanges(suppliedChanges) : eventChanges(before, event);
   if (!changes.length) return { changes, recipients: 0 };
 
   const registrations = await EventRegistration.findAll({
@@ -87,4 +127,10 @@ async function sendEventChangeEmails({ eventName, changes, emailRecipients }) {
   ));
 }
 
-module.exports = { ACTIVE_REGISTRATION_STATUSES, eventChanges, notifyEventChange, sendEventChangeEmails };
+module.exports = {
+  ACTIVE_REGISTRATION_STATUSES,
+  eventChanges,
+  loggedChanges,
+  notifyEventChange,
+  sendEventChangeEmails,
+};
