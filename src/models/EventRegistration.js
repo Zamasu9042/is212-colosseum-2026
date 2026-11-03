@@ -15,6 +15,11 @@ EventRegistration.init(
     },
     confirmedAt: { type: DataTypes.DATE, allowNull: false, field: 'confirmed_at' },
     withdrawnAt: { type: DataTypes.DATE, field: 'withdrawn_at' },
+    // Contact details are a snapshot of what the attendee submitted for this
+    // event. They deliberately do not track later profile edits.
+    fullName: { type: DataTypes.STRING(200), field: 'full_name' },
+    workEmail: { type: DataTypes.STRING(255), field: 'work_email', validate: { isEmail: true } },
+    contactNumber: { type: DataTypes.STRING(20), field: 'contact_number' },
   },
   {
     sequelize,

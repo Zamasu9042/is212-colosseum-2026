@@ -40,6 +40,8 @@ Event.init(
       validate: { min: 0 },
       field: 'available_capacity',
     },
+    registrationStartDatetime: { type: DataTypes.DATE, field: 'registration_start_datetime' },
+    registrationEndDatetime: { type: DataTypes.DATE, field: 'registration_end_datetime' },
     // Set by the venue conflict audit when this event's direct venue
     // (venueId) clashes under the updated rules. Nothing else is changed.
     venueConflictFlaggedAt: { type: DataTypes.DATE, field: 'venue_conflict_flagged_at' },

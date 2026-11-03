@@ -16,7 +16,7 @@ const eventIncludes = [
   { model: Venue, attributes: ['id', 'name', 'location'] },
 ];
 
-const EVENT_UPDATE_FIELDS = ['startDatetime', 'endDatetime', 'venueId', 'status'];
+const EVENT_UPDATE_FIELDS = ['startDatetime', 'endDatetime', 'venueId', 'status', 'registrationStartDatetime', 'registrationEndDatetime'];
 const EVENT_STATUSES = ['planning', 'awaiting_arrangements', 'awaiting_safety_approval', 'confirmed', 'preparation', 'completed', 'cancelled'];
 
 function eventSnapshot(event) {
@@ -136,14 +136,29 @@ router.patch(
   param('id').isUUID(),
   body('startDatetime').optional().isISO8601(),
   body('endDatetime').optional().isISO8601(),
+  body('registrationStartDatetime').optional().isISO8601(),
+  body('registrationEndDatetime').optional().isISO8601(),
   body('venueId').optional({ nullable: true }).isUUID(),
   body('status').optional().isIn(EVENT_STATUSES),
   validateRequest,
   async (req, res, next) => {
     try {
+      // Planning owns its richer change-log/reassessment workflow. This route
+      // remains the operational change path for confirmed events, including
+      // attendee notifications. Route explicitly so the two PATCH handlers
+      // can coexist without swallowing planning edits.
+      const requestedFields = Object.keys(req.body || {});
+      const changesRegistrationWindow = requestedFields.some((field) =>
+        ['registrationStartDatetime', 'registrationEndDatetime'].includes(field)
+      );
+      const planningOnlyFields = requestedFields.some((field) =>
+        ['eventName', 'description', 'purpose', 'category', 'expectedAttendance', 'venueRequirements', 'requestedLayout', 'accessibilityRequirements', 'facilityRequirements', 'setupRequirements', 'equipmentRequirements', 'layout', 'registrationSetup', 'registrationRequired', 'reason'].includes(field)
+      );
+      const eventMode = await Event.findByPk(req.params.id, { attributes: ['status'] });
+      if (planningOnlyFields || ((!eventMode || eventMode.status !== 'confirmed') && !changesRegistrationWindow)) return next();
       const updates = pickEventUpdate(req.body);
       if (!Object.keys(updates).length) {
-        return res.status(400).json({ error: 'Provide at least one of: startDatetime, endDatetime, venueId, status.' });
+        return res.status(400).json({ error: 'Provide at least one editable event field.' });
       }
       const result = await sequelize.transaction(async (transaction) => {
         // Lock only the event row. PostgreSQL cannot apply FOR UPDATE to the
@@ -163,6 +178,23 @@ router.patch(
         const start = new Date(updates.startDatetime || event.startDatetime);
         const end = new Date(updates.endDatetime || event.endDatetime);
         if (end <= start) return { error: 'endDatetime must be after startDatetime.', status: 400 };
+        const registrationStart = new Date(updates.registrationStartDatetime || event.registrationStartDatetime);
+        const registrationEnd = new Date(updates.registrationEndDatetime || event.registrationEndDatetime);
+        const changingRegistrationWindow =
+          Object.prototype.hasOwnProperty.call(updates, 'registrationStartDatetime') ||
+          Object.prototype.hasOwnProperty.call(updates, 'registrationEndDatetime') ||
+          (Object.prototype.hasOwnProperty.call(updates, 'startDatetime') && event.registrationStartDatetime && event.registrationEndDatetime);
+        if (changingRegistrationWindow) {
+          if (Number.isNaN(registrationStart.getTime()) || Number.isNaN(registrationEnd.getTime())) {
+            return { error: 'Both registrationStartDatetime and registrationEndDatetime must be configured together.', status: 400 };
+          }
+          if (registrationStart >= registrationEnd) {
+            return { error: 'registrationStartDatetime must be before registrationEndDatetime.', status: 400 };
+          }
+          if (registrationEnd > start) {
+            return { error: 'registrationEndDatetime must be on or before startDatetime.', status: 400 };
+          }
+        }
         if (Object.prototype.hasOwnProperty.call(updates, 'venueId') && updates.venueId !== null) {
           const venue = await Venue.findByPk(updates.venueId, { transaction });
           if (!venue) return { error: 'Venue not found.', status: 404 };

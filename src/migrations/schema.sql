@@ -216,6 +216,8 @@ CREATE TABLE IF NOT EXISTS events (
     cancelled_at         TIMESTAMPTZ,
     registration_capacity INTEGER CHECK (registration_capacity IS NULL OR registration_capacity > 0),
     available_capacity   INTEGER CHECK (available_capacity IS NULL OR available_capacity >= 0),
+    registration_start_datetime TIMESTAMPTZ,
+    registration_end_datetime   TIMESTAMPTZ,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (end_datetime > start_datetime)
@@ -234,6 +236,9 @@ CREATE TABLE IF NOT EXISTS event_registrations (
                         CHECK (status IN ('confirmed', 'awaiting_reconfirmation', 'withdrawn')),
     confirmed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     withdrawn_at    TIMESTAMPTZ,
+    full_name       VARCHAR(200),
+    work_email      VARCHAR(255),
+    contact_number  VARCHAR(20),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (event_id, attendee_id)
@@ -248,6 +253,18 @@ ALTER TABLE event_registrations ADD CONSTRAINT event_registrations_status_check
 
 ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_capacity INTEGER;
 ALTER TABLE events ADD COLUMN IF NOT EXISTS available_capacity INTEGER;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_start_datetime TIMESTAMPTZ;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_end_datetime TIMESTAMPTZ;
+ALTER TABLE event_registrations ADD COLUMN IF NOT EXISTS full_name VARCHAR(200);
+ALTER TABLE event_registrations ADD COLUMN IF NOT EXISTS work_email VARCHAR(255);
+ALTER TABLE event_registrations ADD COLUMN IF NOT EXISTS contact_number VARCHAR(20);
+UPDATE event_registrations AS er
+SET full_name = NULLIF(trim(concat_ws(' ', u.first_name, u.last_name)), ''),
+    work_email = u.email,
+    contact_number = u.phone
+FROM users AS u
+WHERE er.attendee_id = u.id
+  AND (er.full_name IS NULL OR er.work_email IS NULL OR er.contact_number IS NULL);
 UPDATE events AS e
 SET registration_capacity = r.expected_attendance,
     available_capacity = r.expected_attendance

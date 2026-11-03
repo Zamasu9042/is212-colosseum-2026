@@ -19,11 +19,17 @@ describe('Attendee registration discovery and capacity', () => {
     // the controller unit tests.
     await attendeeA.update({ communicationPrefs: { emailNotifications: false } });
     [attendeeAToken, attendeeBToken] = await Promise.all([attendeeA, attendeeB].map(fx.login));
+    const eventStart = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    const eventEnd = new Date(eventStart.getTime() + 2 * 60 * 60 * 1000);
     event = await fx.makeEvent({
       organiser, coordinator, status: 'confirmed',
-      start: '2027-12-15T09:00:00Z', end: '2027-12-15T11:00:00Z', name: 'One Place Event',
+      start: eventStart.toISOString(), end: eventEnd.toISOString(), name: 'One Place Event',
     });
     await event.update({ registrationCapacity: 1, availableCapacity: 1 });
+    await event.update({
+      registrationStartDatetime: new Date(Date.now() - 60 * 60 * 1000),
+      registrationEndDatetime: new Date(Date.now() + 60 * 60 * 1000),
+    });
   });
 
   afterAll(async () => { await sequelize.close(); });
@@ -35,15 +41,16 @@ describe('Attendee registration discovery and capacity', () => {
       expect.objectContaining({ id: event.id, name: 'One Place Event', availableCapacity: 1 }),
     ]));
 
-    const registered = await request(app).post('/api/attendees/registrations').set(auth(attendeeAToken)).send({ eventId: event.id });
+    const registrationBody = { eventId: event.id, fullName: 'Attendee A', workEmail: 'attendee-a@example.com', contactNumber: '+6591234567' };
+    const registered = await request(app).post('/api/attendees/registrations').set(auth(attendeeAToken)).send(registrationBody);
     expect(registered.status).toBe(201);
     expect(registered.body.availableCapacity).toBe(0);
-    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeAToken)).send({ eventId: event.id })).status).toBe(409);
-    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeBToken)).send({ eventId: event.id })).status).toBe(409);
+    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeAToken)).send(registrationBody)).status).toBe(409);
+    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeBToken)).send({ ...registrationBody, fullName: 'Attendee B', workEmail: 'attendee-b@example.com' })).status).toBe(409);
 
     const withdrawn = await request(app).post(`/api/attendees/registrations/${registered.body.registration.id}/withdraw`).set(auth(attendeeAToken));
     expect(withdrawn.status).toBe(200);
     expect(withdrawn.body.availableCapacity).toBe(1);
-    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeBToken)).send({ eventId: event.id })).status).toBe(201);
+    expect((await request(app).post('/api/attendees/registrations').set(auth(attendeeBToken)).send({ ...registrationBody, fullName: 'Attendee B', workEmail: 'attendee-b@example.com' })).status).toBe(201);
   });
 });

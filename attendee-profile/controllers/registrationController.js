@@ -9,10 +9,27 @@ const { Op } = require('sequelize');
 const { sendWithdrawalEmail } = require('../../src/services/emailService');
 const { ACTIVE_REGISTRATION_STATUSES } = require('../../src/services/eventChangeNotificationService');
 
-const REGISTRABLE_EVENT_STATUSES = ['confirmed', 'preparation'];
+const REGISTRABLE_EVENT_STATUSES = ['confirmed'];
 
 function isBeforeStart(event, now = new Date()) {
   return new Date(event.startDatetime) > now;
+}
+
+function registrationAvailability(event, { availableCapacity, now = new Date() } = {}) {
+  if (!REGISTRABLE_EVENT_STATUSES.includes(event.status)) {
+    return { registrationOpen: false, registrationUnavailableReason: 'Event is not confirmed.' };
+  }
+  if (!event.registrationStartDatetime || !event.registrationEndDatetime) {
+    return { registrationOpen: false, registrationUnavailableReason: 'Registration window has not been configured.' };
+  }
+  const start = new Date(event.registrationStartDatetime);
+  const end = new Date(event.registrationEndDatetime);
+  if (now < start) return { registrationOpen: false, registrationUnavailableReason: 'Registration has not opened yet.' };
+  if (now >= end) return { registrationOpen: false, registrationUnavailableReason: 'Registration window has closed.' };
+  if (availableCapacity !== undefined && availableCapacity < 1) {
+    return { registrationOpen: false, registrationUnavailableReason: 'Event Full' };
+  }
+  return { registrationOpen: true, registrationUnavailableReason: null };
 }
 
 function canWithdraw(registration, event, now = new Date()) {
@@ -62,6 +79,9 @@ function serializeRegistration(registration, event) {
     status: registration.status,
     confirmedAt: registration.confirmedAt,
     withdrawnAt: registration.withdrawnAt,
+    fullName: registration.fullName,
+    workEmail: registration.workEmail,
+    contactNumber: registration.contactNumber,
     event: {
       id: event.id,
       name: event.EventRequest?.eventName,
@@ -94,7 +114,7 @@ async function listRegisterableEvents(req, res, next) {
   try {
     const events = await Event.findAll({
       where: {
-        status: REGISTRABLE_EVENT_STATUSES,
+        status: 'confirmed',
         startDatetime: { [Op.gt]: new Date() },
       },
       include: [{ model: EventRequest, attributes: ['eventName', 'expectedAttendance'] }],
@@ -107,13 +127,17 @@ async function listRegisterableEvents(req, res, next) {
       const registered = await EventRegistration.count({
         where: { eventId: event.id, status: ACTIVE_REGISTRATION_STATUSES },
       });
+      const availableCapacity = Math.max(capacity - registered, 0);
       return {
         id: event.id,
         name: event.EventRequest?.eventName || 'Untitled event',
         startDatetime: event.startDatetime,
         status: event.status,
         registrationCapacity: capacity,
-        availableCapacity: Math.max(capacity - registered, 0),
+        availableCapacity,
+        registrationStartDatetime: event.registrationStartDatetime,
+        registrationEndDatetime: event.registrationEndDatetime,
+        ...registrationAvailability(event, { availableCapacity }),
       };
     }));
     res.json({ events: items.filter(Boolean) });
@@ -127,7 +151,9 @@ async function createRegistration(req, res, next) {
       if (!event) {
         const error = new Error('Event not found.'); error.status = 404; throw error;
       }
-      if (!REGISTRABLE_EVENT_STATUSES.includes(event.status) || !isBeforeStart(event)) {
+      const { availableCapacity } = await ensureCapacity(event, transaction);
+      const availability = registrationAvailability(event, { availableCapacity });
+      if (!availability.registrationOpen || !isBeforeStart(event)) {
         const error = new Error('Registration is unavailable for this event.'); error.status = 409; throw error;
       }
       const existing = await EventRegistration.findOne({
@@ -136,12 +162,12 @@ async function createRegistration(req, res, next) {
       if (existing) {
         const error = new Error('You already have a registration for this event.'); error.status = 409; throw error;
       }
-      const { availableCapacity } = await ensureCapacity(event, transaction);
       if (availableCapacity < 1) {
         const error = new Error('This event is full.'); error.status = 409; throw error;
       }
       const registration = await EventRegistration.create({
         eventId: event.id, attendeeId: req.user.id, status: 'confirmed', confirmedAt: new Date(),
+        fullName: req.body.fullName, workEmail: req.body.workEmail, contactNumber: req.body.contactNumber,
       }, { transaction });
       await event.update({ availableCapacity: availableCapacity - 1 }, { transaction });
       return { registration, event, availableCapacity: availableCapacity - 1 };
@@ -241,4 +267,4 @@ async function reconfirmRegistration(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { listRegistrations, listRegisterableEvents, createRegistration, withdrawRegistration, reconfirmRegistration, canWithdraw };
+module.exports = { listRegistrations, listRegisterableEvents, createRegistration, withdrawRegistration, reconfirmRegistration, canWithdraw, registrationAvailability };
