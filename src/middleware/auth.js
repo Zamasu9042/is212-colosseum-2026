@@ -68,6 +68,7 @@ async function authenticate(req, res, next) {
     email: user.email,
     role: user.Role.name,
     organisationId: user.organisationId,
+    communicationPrefs: user.communicationPrefs,
   };
 
   next();

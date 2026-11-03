@@ -69,7 +69,30 @@ const validateProfileUpdate = [
     .normalizeEmail(),
 ];
 
+const NOTIFICATION_FIELDS = ['emailNotifications', 'inAppNotifications'];
+
+const validatePreferencesUpdate = [
+  body().custom((value, { req }) => {
+    const fields = Object.keys(req.body || {});
+    if (fields.length === 0) {
+      throw new Error('At least one notification preference must be provided.');
+    }
+
+    const unsupportedFields = fields.filter((field) => !NOTIFICATION_FIELDS.includes(field));
+    if (unsupportedFields.length > 0) {
+      throw new Error(`Unsupported notification preference fields: ${unsupportedFields.join(', ')}.`);
+    }
+
+    const invalidFields = fields.filter((field) => typeof req.body[field] !== 'boolean');
+    if (invalidFields.length > 0) {
+      throw new Error(`Notification preferences must be true or false: ${invalidFields.join(', ')}.`);
+    }
+    return true;
+  }),
+];
+
 module.exports = {
   validateProfileUpdate,
+  validatePreferencesUpdate,
   IMMUTABLE_FIELDS,
 };

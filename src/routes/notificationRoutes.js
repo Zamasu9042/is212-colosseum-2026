@@ -14,6 +14,11 @@ router.get(
   validateRequest,
   async (req, res, next) => {
     try {
+      // The default is enabled so existing users retain their current in-app feed.
+      if (req.user.communicationPrefs?.inAppNotifications === false) {
+        return res.json({ notifications: [], count: 0 });
+      }
+
       const where = { userId: req.user.id };
       if (req.query.unread === 'true') where.readAt = null;
       const notifications = await Notification.findAll({
