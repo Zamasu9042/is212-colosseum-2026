@@ -33,7 +33,7 @@ describe('Manage Event Information During Planning', () => {
   describe('editing event information', () => {
     test('an ordinary change updates the record, is logged, and does not flag reassessment', async () => {
       const ev = await fresh();
-      const res = await patch(ev, { eventName: 'Renamed Summit', layout: 'Theatre', reason: 'Branding' });
+      const res = await patch(ev, { eventName: 'Renamed Summit', description: 'New tagline', reason: 'Branding' });
       expect(res.status).toBe(200);
       expect(res.body.changeType).toBe('ordinary');
       expect(res.body.changes.eventName.to).toBe('Renamed Summit');
@@ -41,6 +41,14 @@ describe('Manage Event Information During Planning', () => {
       const request_ = await EventRequest.findByPk(ev.eventRequestId);
       expect(request_.eventName).toBe('Renamed Summit');
       expect((await Event.findByPk(ev.id)).reassessmentFlaggedAt).toBeNull();
+    });
+
+    test('a layout change is major (it invalidates safety/venue arrangements) and flags reassessment', async () => {
+      const ev = await fresh();
+      const res = await patch(ev, { layout: 'Theatre', reason: 'Seating change' });
+      expect(res.status).toBe(200);
+      expect(res.body.changeType).toBe('major');
+      expect(res.body.reassessment).not.toBeNull();
     });
 
     test('a major change (date/time + attendance) updates both rows and flags reassessment', async () => {

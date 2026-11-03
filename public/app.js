@@ -243,9 +243,9 @@ function navFor(r) {
   const common = [n('/', 'Dashboard')];
   const tail = [n('/notifications', 'Notifications', 'notifications'), n('/help', 'Help & tutorials')];
   const byRole = {
-    event_organiser: [n('/requests', 'My event requests'), n('/requests/new', 'New request'), n('/venues', 'Venues')],
-    event_coordinator: [n('/review', 'Review queue'), n('/events', 'My events'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule'), n('/equipment', 'Equipment')],
-    event_coordinator_lead: [n('/assign', 'Assign requests'), n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
+    event_organiser: [n('/requests', 'My event requests'), n('/requests/new', 'New request'), n('/my-events', 'My events'), n('/venues', 'Venues')],
+    event_coordinator: [n('/review', 'Review queue'), n('/events', 'My events'), n('/change-requests', 'Change requests'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule'), n('/equipment', 'Equipment')],
+    event_coordinator_lead: [n('/assign', 'Assign requests'), n('/events', 'Events'), n('/change-requests', 'Change requests'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
     venue_staff: [n('/venue-bookings', 'Booking queue'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule')],
     technical_support_staff: [n('/equipment', 'Equipment catalogue'), n('/events', 'Events & reservations')],
     safety_officer: [n('/safety-review', 'Safety reviews'), n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
@@ -525,6 +525,7 @@ route('/requests', async (root) => {
     { title: 'Attendance', render: (r) => r.expectedAttendance ?? '—' },
     { title: 'Status', render: (r) => pill(r.status) },
     { title: 'Last updated', class: 'nowrap', render: (r) => fmtDT(r.updated_at) },
+    { title: '', render: (r) => (['submitted', 'under_review'].includes(r.status) ? h('button', { class: 'small', onclick: () => go(`/requests/${r.id}`) }, 'Request a change') : null) },
   ], eventRequests, { onRow: (r) => go(`/requests/${r.id}`), empty: 'You have no event requests yet.' })));
 }, { roles: ['event_organiser'] });
 
@@ -558,6 +559,20 @@ function requestDetails(r) {
   if (r.reviewReason) rows.push(['Review note', r.reviewReason]);
   if (r.submittedAt) rows.push(['Submitted', fmtDT(r.submittedAt)]);
   return h('dl', { class: 'kv' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, typeof v === 'string' || typeof v === 'number' ? String(v) : v)]));
+}
+
+function amendRequestDialog(r) {
+  const form = requestForm(r);
+  openDialog({
+    title: 'Request a change', submitLabel: 'Save changes', wide: true,
+    build: (b) => b.append(h('p', { class: 'muted' }, 'Update anything that has changed. Your Event Coordinator is notified when you save.'), form),
+    onSubmit: async (close) => {
+      await api(`/event-requests/${r.id}/amend`, { method: 'PATCH', body: readRequestForm(form) });
+      close();
+      toast('Request updated. Your coordinator has been notified.', 'ok');
+      render();
+    },
+  });
 }
 
 route('/requests/:id', async (root, id) => {
@@ -600,7 +615,12 @@ route('/requests/:id', async (root, id) => {
       h('button', { onclick: () => decide('returned', false) }, 'Return'),
       h('button', { class: 'danger', onclick: () => decide('rejected', true) }, 'Reject'));
   }
-  root.append(pageHead(r.eventName || 'Event request', null, actions, crumbs), h('div', { class: 'card' }, requestDetails(r)));
+  let changeNote = null;
+  if (is('event_organiser') && ['submitted', 'under_review'].includes(r.status)) {
+    actions.push(h('button', { class: 'primary', onclick: () => amendRequestDialog(r) }, 'Request a change'));
+    changeNote = alertBox('info', 'This request is waiting for a decision. You can still change it; your Event Coordinator will be notified of the update.');
+  }
+  root.append(pageHead(r.eventName || 'Event request', null, actions, crumbs), changeNote, h('div', { class: 'card' }, requestDetails(r)));
 });
 
 route('/review', async (root) => {
@@ -641,6 +661,137 @@ route('/assign', async (root) => {
     h('div', { class: 'card', 'data-tour': 'assign-unassigned' }, h('h2', null, `Unassigned requests (${unassigned.count})`), table([...cols, { title: 'Assign coordinator', render: assignCell }], unassigned.eventRequests, { empty: 'No unassigned requests.' })),
     h('div', { class: 'card', 'data-tour': 'assign-current' }, h('h2', null, 'Current assignments and active events'), table([...cols, { title: 'Replacement coordinator', render: assignCell }], assigned.eventRequests, { empty: 'No assignments yet.' })));
 }, { roles: ['event_coordinator_lead'] });
+
+// =====================================================================
+// Change requests (organiser asks, coordinator decides)
+// =====================================================================
+const CHANGE_FIELDS = {
+  startDatetime: ['Start', (v) => fmtDT(v)],
+  endDatetime: ['End', (v) => fmtDT(v)],
+  expectedAttendance: ['Expected attendance', (v) => String(v ?? '—')],
+  venueRequirements: ['Venue requirements', (v) => v || '—'],
+  equipmentRequirements: ['Equipment requirements', (v) => v || '—'],
+};
+
+/** Before/after table for a change request. */
+function changeDiff(cr) {
+  const keys = Object.keys(cr.proposedChanges || {});
+  return h('div', { class: 'table-wrap' }, h('table', null,
+    h('thead', null, h('tr', null, ['What', 'Now', 'Requested'].map((t) => h('th', null, t)))),
+    h('tbody', null, keys.map((k) => {
+      const [lbl, fmt] = CHANGE_FIELDS[k] || [k, (v) => String(v ?? '—')];
+      return h('tr', null, h('td', null, lbl), h('td', null, fmt(cr.currentValues?.[k])), h('td', null, h('strong', null, fmt(cr.proposedChanges[k]))));
+    }))));
+}
+
+route('/my-events', async (root) => {
+  const { events } = await api('/my-events');
+  root.append(pageHead('My events', 'Approved events. Open one to request a change.'),
+    h('div', { class: 'card' }, table([
+      { title: 'Event', render: (e) => h('strong', null, e.EventRequest?.eventName || 'Event') },
+      { title: 'When', render: (e) => fmtRange(e.startDatetime, e.endDatetime) },
+      { title: 'Attendance', render: (e) => e.EventRequest?.expectedAttendance ?? '—' },
+      { title: 'Status', render: (e) => pill(e.status) },
+    ], events, { onRow: (e) => go(`/my-events/${e.id}`), empty: 'You have no approved events yet.' })));
+}, { roles: ['event_organiser'] });
+
+function changeRequestDialog(event, onDone) {
+  const er = event.EventRequest || {};
+  const f = {};
+  openDialog({
+    title: 'Request a change', submitLabel: 'Submit change request', wide: true,
+    build: (b) => {
+      b.append(h('p', { class: 'muted' }, 'Change only what you need. Fields left as they are will not be sent. Your coordinator must approve before anything changes.'));
+      f.start = input('start', { type: 'datetime-local', value: toLocalInput(event.startDatetime) });
+      f.end = input('end', { type: 'datetime-local', value: toLocalInput(event.endDatetime) });
+      f.att = input('att', { type: 'number', min: 1, value: er.expectedAttendance ?? '' });
+      f.venue = h('textarea', { name: 'venue' }, er.venueRequirements || '');
+      f.equip = h('textarea', { name: 'equip' }, er.equipmentRequirements || '');
+      f.reason = h('textarea', { name: 'reason', placeholder: 'Why is this change needed?' });
+      b.append(field('Start', f.start), field('End', f.end), field('Expected attendance', f.att),
+        field('Venue requirements', f.venue), field('Equipment requirements', f.equip), field('Reason', f.reason));
+    },
+    onSubmit: async (close) => {
+      const body = { reason: f.reason.value || undefined };
+      const start = fromLocalInput(f.start.value), end = fromLocalInput(f.end.value);
+      if (start && new Date(start).getTime() !== new Date(event.startDatetime).getTime()) body.startDatetime = start;
+      if (end && new Date(end).getTime() !== new Date(event.endDatetime).getTime()) body.endDatetime = end;
+      if (f.att.value && Number(f.att.value) !== er.expectedAttendance) body.expectedAttendance = Number(f.att.value);
+      if (f.venue.value !== (er.venueRequirements || '')) body.venueRequirements = f.venue.value;
+      if (f.equip.value !== (er.equipmentRequirements || '')) body.equipmentRequirements = f.equip.value;
+      if (Object.keys(body).length <= (body.reason ? 1 : 0)) throw new Error('Change at least one field before submitting.');
+      await api(`/events/${event.id}/change-requests`, { method: 'POST', body });
+      close();
+      toast('Change request sent to your coordinator.', 'ok');
+      onDone();
+    },
+  });
+}
+
+route('/my-events/:id', async (root, id) => {
+  const [{ events }, { changeRequests }] = await Promise.all([api('/my-events'), api(`/events/${id}/change-requests`)]);
+  const event = events.find((e) => e.id === id);
+  if (!event) throw new Error('Event not found.');
+  const er = event.EventRequest || {};
+  const pending = changeRequests.find((c) => c.status === 'pending');
+  const closed = ['completed', 'cancelled'].includes(event.status);
+  root.append(
+    pageHead(er.eventName || 'Event', fmtRange(event.startDatetime, event.endDatetime), [
+      pending || closed ? null : h('button', { class: 'primary', onclick: () => changeRequestDialog(event, render) }, 'Request a change'),
+    ], [['/my-events', 'My events'], [null, er.eventName || 'Event']]),
+    pending ? alertBox('warn', 'You have a change request waiting for your coordinator. You can withdraw it below.') : null,
+    h('div', { class: 'card' }, h('h2', null, 'Current details'), h('dl', { class: 'kv' },
+      h('dt', null, 'Status'), h('dd', null, pill(event.status)),
+      h('dt', null, 'When'), h('dd', null, fmtRange(event.startDatetime, event.endDatetime)),
+      h('dt', null, 'Expected attendance'), h('dd', null, er.expectedAttendance ?? '—'),
+      h('dt', null, 'Venue requirements'), h('dd', null, er.venueRequirements || '—'),
+      h('dt', null, 'Equipment requirements'), h('dd', null, er.equipmentRequirements || '—'))),
+    h('div', { class: 'card' }, h('h2', null, 'Change requests'),
+      changeRequests.length ? changeRequests.map((cr) => h('div', { style: { marginBottom: '1.2rem' } },
+        h('div', { class: 'card-head' },
+          h('div', null, pill(cr.status), ' ', h('span', { class: 'muted small' }, `Requested ${fmtDT(cr.created_at || cr.createdAt)}`)),
+          cr.status === 'pending' ? h('button', { class: 'small danger', onclick: async () => {
+            try { await api(`/event-change-requests/${cr.id}/withdraw`, { method: 'POST' }); toast('Change request withdrawn.', 'ok'); render(); }
+            catch (err) { toast(err.message, 'error'); }
+          } }, 'Withdraw') : null),
+        changeDiff(cr),
+        cr.reason ? h('p', { class: 'small' }, `Your reason: ${cr.reason}`) : null,
+        cr.reviewReason ? h('p', { class: 'small' }, `Coordinator's note: ${cr.reviewReason}`) : null))
+        : h('div', { class: 'empty' }, 'No change requests yet.')));
+}, { roles: ['event_organiser'] });
+
+route('/change-requests', async (root) => {
+  const status = hashQuery().get('status') || 'pending';
+  const { changeRequests } = await api('/event-change-requests', { query: { status } });
+  const decide = (cr, kind) => openDialog({
+    title: kind === 'approve' ? 'Approve change' : 'Reject change',
+    submitLabel: kind === 'approve' ? 'Approve & apply' : 'Reject', danger: kind === 'reject', wide: true,
+    build: (b) => b.append(
+      cr.isMajor ? alertBox('warn', 'This is a major change. Approving will flag the event for reassessment and list affected venue and equipment arrangements. Nothing is cancelled automatically.') : null,
+      changeDiff(cr),
+      field(kind === 'reject' ? 'Reason (required)' : 'Note to organiser (optional)', h('textarea', { name: 'reviewReason', required: kind === 'reject' }))),
+    onSubmit: async (close) => {
+      const reviewReason = document.querySelector('dialog textarea[name=reviewReason]').value;
+      await api(`/event-change-requests/${cr.id}/${kind}`, { method: 'POST', body: { reviewReason } });
+      close();
+      toast(kind === 'approve' ? 'Change approved and applied.' : 'Change rejected.', 'ok');
+      render();
+    },
+  });
+  const chips = [['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['withdrawn', 'Withdrawn'], ['all', 'All']];
+  root.append(pageHead('Change requests', 'Changes organisers have asked for on approved events.'),
+    h('div', { class: 'card' },
+      h('div', { class: 'chips', style: { marginBottom: '.9rem' } }, chips.map(([v, t]) => h('button', { class: `chip ${v === status ? 'on' : ''}`, onclick: () => go(`/change-requests?status=${v}`) }, t))),
+      table([
+        { title: 'Event', render: (cr) => h('a', { href: `#/events/${cr.eventId}` }, h('strong', null, cr.Event?.EventRequest?.eventName || 'Event')) },
+        { title: 'Requested by', render: (cr) => fullName(cr.requester) },
+        { title: 'Changes', render: (cr) => h('div', null, Object.keys(cr.proposedChanges || {}).map((k) => (CHANGE_FIELDS[k] || [k])[0]).join(', '), cr.isMajor ? [' ', pill('pending', 'Major')] : null) },
+        { title: 'Status', render: (cr) => pill(cr.status) },
+        { title: '', render: (cr) => cr.status === 'pending' && is('event_coordinator') ? h('div', { class: 'actions' },
+          h('button', { class: 'small primary', onclick: () => decide(cr, 'approve') }, 'Approve'),
+          h('button', { class: 'small danger', onclick: () => decide(cr, 'reject') }, 'Reject')) : null },
+      ], changeRequests, { empty: 'No change requests here.' })));
+}, { roles: ['event_coordinator', 'event_coordinator_lead'] });
 
 // =====================================================================
 // Events (SCRUM-21 reservations, SCRUM-24 readiness live here)
@@ -759,6 +910,68 @@ function registrationWindowCard(event) {
   return card;
 }
 
+// ---- Manage event information during planning (coordinator edit + change log) ----
+const LOG_LABELS = { ...Object.fromEntries(Object.entries(CHANGE_FIELDS).map(([k, v]) => [k, v[0]])), eventName: 'Event name', description: 'Description' };
+const logVal = (k, v) => (['startDatetime', 'endDatetime'].includes(k) && v ? fmtDT(v) : (v === null || v === undefined || v === '' ? '—' : String(v)));
+
+function editEventDialog(event) {
+  const er = event.EventRequest || {};
+  const f = {
+    name: input('name', { value: er.eventName || '' }),
+    desc: h('textarea', { name: 'desc' }, er.description || ''),
+    start: input('start', { type: 'datetime-local', value: toLocalInput(event.startDatetime) }),
+    end: input('end', { type: 'datetime-local', value: toLocalInput(event.endDatetime) }),
+    att: input('att', { type: 'number', min: 1, value: er.expectedAttendance ?? '' }),
+    venue: h('textarea', { name: 'venue' }, er.venueRequirements || ''),
+    equip: h('textarea', { name: 'equip' }, er.equipmentRequirements || ''),
+    reason: h('textarea', { name: 'reason', placeholder: 'Why are you changing this?' }),
+  };
+  openDialog({
+    title: 'Edit event information', submitLabel: 'Save changes', wide: true,
+    build: (b) => b.append(
+      h('p', { class: 'muted' }, 'Changing date/time, attendance, venue or equipment requirements is a major change: the event is flagged for reassessment and affected venue and equipment arrangements are listed. Other edits are ordinary and just logged.'),
+      field('Event name', f.name), field('Description', f.desc),
+      field('Start (major)', f.start), field('End (major)', f.end), field('Expected attendance (major)', f.att),
+      field('Venue requirements (major)', f.venue), field('Equipment requirements (major)', f.equip), field('Reason', f.reason)),
+    onSubmit: async (close) => {
+      const body = {};
+      if (f.name.value !== (er.eventName || '')) body.eventName = f.name.value;
+      if (f.desc.value !== (er.description || '')) body.description = f.desc.value;
+      const st = fromLocalInput(f.start.value), en = fromLocalInput(f.end.value);
+      if (st && new Date(st).getTime() !== new Date(event.startDatetime).getTime()) body.startDatetime = st;
+      if (en && new Date(en).getTime() !== new Date(event.endDatetime).getTime()) body.endDatetime = en;
+      if (f.att.value && Number(f.att.value) !== er.expectedAttendance) body.expectedAttendance = Number(f.att.value);
+      if (f.venue.value !== (er.venueRequirements || '')) body.venueRequirements = f.venue.value;
+      if (f.equip.value !== (er.equipmentRequirements || '')) body.equipmentRequirements = f.equip.value;
+      if (!Object.keys(body).length) throw new Error('Change at least one field before saving.');
+      if (f.reason.value) body.reason = f.reason.value;
+      const res = await api(`/events/${event.id}`, { method: 'PATCH', body });
+      close();
+      toast(res.changeType === 'major' ? 'Major change saved — event flagged for reassessment.' : 'Event updated.', 'ok');
+      render();
+    },
+  });
+}
+
+async function changeLogCard(event) {
+  const log = await safe(api(`/events/${event.id}/change-log`));
+  if (!log) return null;
+  const d = log.reassessmentDetails;
+  return h('div', null,
+    log.reassessmentFlaggedAt ? alertBox('warn', `Reassessment required since ${fmtDT(log.reassessmentFlaggedAt)} (major change to ${(d?.majorFields || []).map((k) => LOG_LABELS[k] || k).join(', ') || 'event details'}).`,
+      [...(d?.affectedBookings || []).map((x) => `Venue booking at ${x.venueName || 'venue'} (${label(x.status)}) may need review: ${(x.reasons || []).map((r) => r.replace(/_/g, ' ')).join(', ')}`),
+        ...(d?.activeEquipmentReservations ? [`${d.activeEquipmentReservations} active equipment reservation(s) may no longer match the new time`] : []),
+        ...(d?.equipmentRequestLines ? [`${d.equipmentRequestLines} equipment requirement line(s) to re-check`] : [])]) : null,
+    h('div', { class: 'card' }, h('h2', null, 'Change history'),
+      table([
+        { title: 'When', class: 'nowrap', render: (e) => fmtDT(e.created_at || e.createdAt) },
+        { title: 'By', render: (e) => (e.changer ? fullName(e.changer) : '—') },
+        { title: 'Type', render: (e) => pill(e.changeType === 'major' ? 'rejected' : 'pending', e.changeType === 'major' ? 'Major' : 'Ordinary') },
+        { title: 'Changes', render: (e) => h('div', null, Object.entries(e.changes || {}).map(([k, c]) => h('div', { class: 'small' }, `${LOG_LABELS[k] || k}: ${logVal(k, c.from)} → ${logVal(k, c.to)}`))) },
+        { title: 'Reason', render: (e) => e.reason || '—' },
+      ], log.entries, { empty: 'No changes recorded yet.' })));
+}
+
 route('/events/:id', async (root, id) => {
   const [detail, reqs, bookings, safety] = await Promise.all([
     api(`/events/${id}`),
@@ -774,7 +987,9 @@ route('/events/:id', async (root, id) => {
   const ready = event.technicalReadiness === 'complete';
 
   root.appendChild(pageHead(er.eventName || 'Event', fmtRange(event.startDatetime, event.endDatetime),
-    [pill(event.status), pill(ready ? 'complete' : 'pending', ready ? 'Technically ready' : 'Technical readiness pending')],
+    [pill(event.status), pill(ready ? 'complete' : 'pending', ready ? 'Technically ready' : 'Technical readiness pending'),
+      is('event_coordinator') && event.coordinatorId === session.user.id && !['completed', 'cancelled'].includes(event.status)
+        ? h('button', { class: 'primary', onclick: () => editEventDialog(event) }, 'Edit event information') : null],
     [['/events', 'Events'], [null, er.eventName || 'Event']]));
 
   // ----- Overview -----
@@ -805,6 +1020,8 @@ route('/events/:id', async (root, id) => {
       } }, 'Remove') : null) },
   ], reqs.equipmentRequests, { empty: 'No equipment has been requested for this event.' }));
   root.appendChild(lineCard);
+  const logNode = await changeLogCard(event);
+  if (logNode) root.appendChild(logNode);
 
   // ----- Reservations (SCRUM-21 AC4) -----
   root.appendChild(h('div', { class: 'card', 'data-tour': 'ev-reservations' }, h('div', { class: 'card-head' },

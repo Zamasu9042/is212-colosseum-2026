@@ -671,4 +671,58 @@ router.post(
   }
 );
 
+// An Event Organiser may change their own request while it is still waiting
+// for a decision (submitted / under_review). Nothing is approved yet, so no
+// review step is needed; the assigned Coordinator is simply told it changed.
+router.patch(
+  '/:id/amend',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_ORGANISER),
+  param('id').isUUID(),
+  draftValidators,
+  validateRequest,
+  async (req, res, next) => {
+    try {
+      const eventRequest = await EventRequest.findByPk(req.params.id);
+      if (!eventRequest) return res.status(404).json({ error: 'Event request not found.' });
+      if (eventRequest.organiserId !== req.user.id) {
+        return res.status(403).json({ error: 'Forbidden. You do not have access to this resource.' });
+      }
+      if (!['submitted', 'under_review'].includes(eventRequest.status)) {
+        return res.status(409).json({
+          error: 'Only submitted requests awaiting a decision can be amended this way. Approved events need a change request.',
+        });
+      }
+      const updates = pickDraftFields(req.body);
+      if (!Object.keys(updates).length) {
+        return res.status(400).json({ error: 'No editable fields supplied.' });
+      }
+      const merged = EventRequest.build({ ...eventRequest.toJSON(), ...updates });
+      const missing = missingRequiredFields(merged);
+      if (missing.length > 0) {
+        return res.status(400).json({ error: 'Required information cannot be removed from a submitted request.', missingFields: missing });
+      }
+      const start = new Date(merged.preferredStart);
+      const end = new Date(merged.preferredEnd);
+      if (!(end > start)) {
+        return res.status(400).json({ error: 'preferredEnd must be after preferredStart.' });
+      }
+
+      const changed = Object.keys(updates).filter((k) => String(eventRequest[k] ?? '') !== String(updates[k] ?? ''));
+      await eventRequest.update(updates);
+      if (changed.length && eventRequest.assignedCoordinatorId) {
+        await Notification.create({
+          userId: eventRequest.assignedCoordinatorId,
+          type: 'event_request_amended',
+          message: `The organiser updated the submitted request "${eventRequest.eventName}" (${changed.join(', ')}). Please review the latest version.`,
+        });
+      }
+      await eventRequest.reload({ include: detailedIncludes });
+      res.json({ eventRequest, changedFields: changed });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 module.exports = router;

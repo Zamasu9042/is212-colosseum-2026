@@ -200,6 +200,26 @@ router.get(
 );
 
 // ---------------------------------------------------------------------
+// GET /api/my-events  (organiser: the events created from their own requests)
+// ---------------------------------------------------------------------
+router.get(
+  '/my-events',
+  authenticate,
+  authorize(ROLE_NAMES.EVENT_ORGANISER),
+  async (req, res, next) => {
+    try {
+      const events = await Event.findAll({
+        include: [{ model: EventRequest, where: { organiserId: req.user.id }, required: true }],
+        order: [['start_datetime', 'ASC']],
+      });
+      res.json({ events, count: events.length });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ---------------------------------------------------------------------
 // GET /api/event-change-requests?status=pending|approved|rejected|withdrawn|all
 // ---------------------------------------------------------------------
 router.get(
