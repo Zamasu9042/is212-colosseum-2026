@@ -28,6 +28,7 @@ const {
   Role,
   Venue,
   VenueBooking,
+  OperationalSafetyCheck,
   ROLE_NAMES,
 } = require('../models');
 const { checkVenueConflicts, ACTIVE_BOOKING_STATUSES } = require('./venueConflictService');
@@ -68,6 +69,8 @@ const MAJOR_FIELDS = new Set([
   'endDatetime',
   'expectedAttendance',
   'venueRequirements',
+  'requestedLayout',
+  'layout',
   'equipmentRequirements',
 ]);
 
@@ -275,9 +278,27 @@ async function applyEventChanges({
       ...impact,
     };
     await event.update(
-      { reassessmentFlaggedAt: new Date(), reassessmentDetails: reassessment },
+      {
+        reassessmentFlaggedAt: new Date(),
+        reassessmentDetails: reassessment,
+        // A material change invalidates any previous safety approval. The
+        // coordinator must recheck arrangements and submit a fresh review.
+        status: 'awaiting_arrangements',
+      },
       { transaction }
     );
+
+    const safetyCheck = await OperationalSafetyCheck.findOne({
+      where: { eventId: event.id }, transaction,
+    });
+    if (safetyCheck && ['pending', 'approved'].includes(safetyCheck.status)) {
+      await safetyCheck.update({
+        status: 'changes_requested',
+        decisionReason: 'A material event change requires a new operational safety review.',
+        reviewedAt: new Date(),
+      }, { transaction });
+      reassessment.safetyReviewRequired = true;
+    }
 
     // New date/time or equipment needs can no longer be called "ready".
     const equipmentAffected = timeChanged || 'equipmentRequirements' in changes;

@@ -9,7 +9,7 @@ jest.mock('../../src/services/emailService', () => ({ sendWithdrawalEmail: jest.
 
 const { sequelize, Event, EventRegistration, Notification } = require('../../src/models');
 const { sendWithdrawalEmail } = require('../../src/services/emailService');
-const { createRegistration, withdrawRegistration, canWithdraw } = require('../controllers/registrationController');
+const { createRegistration, withdrawRegistration, listRegisterableEvents, canWithdraw } = require('../controllers/registrationController');
 
 function response() {
   const res = {};
@@ -122,5 +122,18 @@ describe('Attendee registration withdrawal', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(Notification.create).not.toHaveBeenCalled();
+  });
+
+  test('lists only future, registerable events with a recalculated available capacity', async () => {
+    const event = buildEvent();
+    Event.findAll = jest.fn().mockResolvedValue([event]);
+    EventRegistration.count.mockResolvedValue(7);
+    const res = response();
+
+    await listRegisterableEvents({ user: attendee }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({ events: [expect.objectContaining({
+      id: event.id, name: 'ConnectSphere Demo', registrationCapacity: 10, availableCapacity: 3,
+    })] });
   });
 });

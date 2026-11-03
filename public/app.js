@@ -50,6 +50,7 @@ const ROLE_LABELS = {
 };
 const STATUS_LABELS = {
   in_repair: 'In repair', under_review: 'Under review', awaiting_arrangements: 'Awaiting arrangements',
+  awaiting_safety_approval: 'Awaiting safety approval', changes_requested: 'Changes requested',
   needs_replacement: 'Needs replacement', tentative_hold: 'Tentative hold', confirmed_booking: 'Confirmed booking',
   temporarily_unavailable: 'Unavailable', expired_hold: 'Expired hold',
 };
@@ -247,8 +248,8 @@ function navFor(r) {
     event_coordinator_lead: [n('/assign', 'Assign requests'), n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
     venue_staff: [n('/venue-bookings', 'Booking queue'), n('/venues', 'Venues'), n('/venue-schedule', 'Venue schedule')],
     technical_support_staff: [n('/equipment', 'Equipment catalogue'), n('/events', 'Events & reservations')],
-    safety_officer: [n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
-    attendee: [n('/profile', 'My profile'), n('/venues', 'Venues')],
+    safety_officer: [n('/safety-review', 'Safety reviews'), n('/events', 'Events'), n('/equipment', 'Equipment'), n('/venues', 'Venues')],
+    attendee: [n('/registrations', 'Event registrations'), n('/profile', 'My profile'), n('/venues', 'Venues')],
   };
   return [...common, ...(byRole[r] || []), ...tail];
 }
@@ -673,11 +674,71 @@ function allocationBar(line) {
   return h('div', { class: `bar ${line.fullyAllocated ? 'full' : ''}`, title: `${pct}%` }, h('span', { style: { width: `${pct}%` } }));
 }
 
+function safetyDecisionDialog(eventId, decision) {
+  const needsReason = decision !== 'approve';
+  openDialog({
+    title: decision === 'approve' ? 'Approve safety review' : decision === 'reject' ? 'Reject safety review' : 'Request safety changes',
+    submitLabel: decision === 'approve' ? 'Approve' : decision === 'reject' ? 'Reject' : 'Request changes',
+    danger: decision === 'reject',
+    build: (body) => body.appendChild(field('Reason', h('textarea', { name: 'reason', required: needsReason }), needsReason ? 'Required for this decision.' : 'Optional approval note.')),
+    onSubmit: async (close) => {
+      const reason = document.querySelector('dialog textarea[name=reason]').value.trim();
+      await api(`/events/${eventId}/operational-safety-check/decision`, { method: 'PATCH', body: { decision, ...(reason ? { reason } : {}) } });
+      close(); toast(`Safety review ${decision === 'request_changes' ? 'sent back for changes' : `${decision}d`}.`, 'ok');
+      go('/safety-review');
+    },
+  });
+}
+
+function submitSafetyCheckDialog(event) {
+  openDialog({
+    title: 'Request operational safety review', submitLabel: 'Send to Safety Officer', wide: true,
+    build: (body) => append(body, [
+      alertBox('info', 'Confirm that technical arrangements are complete, then provide the operational details for the Safety Officer.'),
+      field('', input('technicalArrangementsConfirmed', { type: 'checkbox', checked: true, required: true }), 'Technical arrangements confirmed'),
+      field('Emergency access', h('textarea', { name: 'emergencyAccess', required: true, placeholder: 'Emergency exits, access routes, and evacuation considerations' })),
+      field('Equipment placement', h('textarea', { name: 'equipmentPlacement', required: true, placeholder: 'Placement and safety of technical equipment' })),
+      field('Crowd movement', h('textarea', { name: 'crowdMovement', required: true, placeholder: 'Entry, exit, queues, and crowd-flow plan' })),
+      field('Venue restrictions (optional)', h('textarea', { name: 'venueRestrictions', placeholder: 'Known venue restrictions or constraints' })),
+    ]),
+    onSubmit: async (close) => {
+      const d = formData(document.querySelector('dialog form'));
+      await api(`/events/${event.id}/operational-safety-check`, { method: 'POST', body: {
+        technicalArrangementsConfirmed: true,
+        emergencyAccess: d.emergencyAccess,
+        equipmentPlacement: d.equipmentPlacement,
+        crowdMovement: d.crowdMovement,
+        venueRestrictions: d.venueRestrictions || null,
+      } });
+      close(); toast('Safety review requested.', 'ok'); render();
+    },
+  });
+}
+
+function safetySummaryCard(event, safety) {
+  const check = safety?.operationalSafetyCheck;
+  const canSubmit = is('event_coordinator') && event.coordinatorId === session.user.id && (!check || check.status === 'changes_requested') && !['completed', 'cancelled', 'preparation'].includes(event.status);
+  const canPrepare = is('event_coordinator') && event.coordinatorId === session.user.id && check?.status === 'approved' && event.status !== 'preparation';
+  const card = h('div', { class: 'card' }, h('h2', null, 'Operational safety review'));
+  if (!check) card.appendChild(alertBox('info', 'No safety review has been requested yet. Venue arrangements must be approved before it can be submitted.'));
+  else {
+    card.appendChild(h('p', null, pill(check.status), check.decisionReason ? ` ${check.decisionReason}` : ''));
+    card.appendChild(h('div', { class: 'small muted' }, `Requested ${fmtDT(check.requestedAt)}${check.reviewedAt ? ` · reviewed ${fmtDT(check.reviewedAt)}` : ''}`));
+  }
+  if (canSubmit || canPrepare) card.appendChild(h('div', { class: 'actions', style: { marginTop: '.8rem' } },
+    canSubmit ? h('button', { class: 'primary', onclick: () => submitSafetyCheckDialog(event) }, 'Request safety review') : null,
+    canPrepare ? h('button', { class: 'primary', onclick: async () => {
+      await api(`/events/${event.id}/proceed-to-preparation`, { method: 'POST' }); toast('Preparation can begin.', 'ok'); render();
+    } }, 'Begin preparation') : null));
+  return card;
+}
+
 route('/events/:id', async (root, id) => {
-  const [detail, reqs, bookings] = await Promise.all([
+  const [detail, reqs, bookings, safety] = await Promise.all([
     api(`/events/${id}`),
     api(`/events/${id}/equipment-requests`),
     safe(api(`/events/${id}/venue-bookings`)),
+    safe(api(`/events/${id}/operational-safety-check`)),
   ]);
   const { event, equipmentReservations } = detail;
   const er = event.EventRequest || {};
@@ -699,7 +760,7 @@ route('/events/:id', async (root, id) => {
       h('dt', null, 'Expected attendance'), h('dd', null, er.expectedAttendance ?? '—'),
       h('dt', null, 'Equipment notes'), h('dd', null, er.equipmentRequirements || '—'),
       h('dt', null, 'Event request'), h('dd', null, is('event_coordinator', 'safety_officer') ? h('a', { href: `#/requests/${er.id}` }, 'View original request') : (er.category ? label(er.category) : '—')))),
-    readinessCard(event, allocation)));
+    readinessCard(event, allocation), safetySummaryCard(event, safety)));
 
   // ----- Equipment requests (SCRUM-24) -----
   const lineCard = h('div', { class: 'card', 'data-tour': 'ev-requests' }, h('div', { class: 'card-head' },
@@ -1226,11 +1287,55 @@ route('/venue-bookings', async (root) => {
 }, { roles: ['venue_staff'] });
 
 // =====================================================================
-// Notifications, profile
+// Safety reviews, notifications, attendee profile
 // =====================================================================
+route('/safety-review', async (root) => {
+  const { operationalSafetyChecks: checks } = await api('/operational-safety-checks/pending');
+  root.append(pageHead('Safety reviews', 'Pending operational safety checks, oldest first.'),
+    h('div', { class: 'card' }, table([
+      { title: 'Event', render: (c) => h('strong', null, c.Event?.EventRequest?.eventName || 'Untitled event') },
+      { title: 'When', render: (c) => fmtRange(c.Event?.startDatetime, c.Event?.endDatetime) },
+      { title: 'Requested', render: (c) => fmtDT(c.requestedAt) },
+      { title: '', render: (c) => h('a', { class: 'btn small primary', href: `#/safety-review/${c.eventId}` }, 'Review') },
+    ], checks, { empty: 'There are no safety reviews awaiting a decision.' })));
+}, { roles: ['safety_officer'] });
+
+route('/safety-review/:eventId', async (root, eventId) => {
+  const safety = await api(`/events/${eventId}/operational-safety-check`);
+  const { event, operationalSafetyCheck: check, reviewInformation: info } = safety;
+  const capacities = Array.isArray(info.venueCapacity) ? info.venueCapacity.filter(Boolean).join(', ') : info.venueCapacity;
+  root.append(pageHead(event.EventRequest?.eventName || 'Safety review', fmtRange(event.startDatetime, event.endDatetime),
+    [pill(check.status)], [['/safety-review', 'Safety reviews'], [null, 'Review']]),
+  h('div', { class: 'grid grid-2' },
+    h('div', { class: 'card' }, h('h2', null, 'Event context'), h('dl', { class: 'kv' },
+      h('dt', null, 'Expected attendance'), h('dd', null, info.expectedAttendance ?? '—'),
+      h('dt', null, 'Venue capacity'), h('dd', null, capacities || '—'),
+      h('dt', null, 'Layout'), h('dd', null, info.venueLayout || '—'),
+      h('dt', null, 'Accessibility requirements'), h('dd', null, info.accessibilityRequirements || '—'),
+      h('dt', null, 'Equipment requirements'), h('dd', null, info.equipmentRequirements || '—'),
+      h('dt', null, 'Known venue restrictions'), h('dd', null, info.knownVenueRestrictions?.join(', ') || '—'))),
+    h('div', { class: 'card' }, h('h2', null, 'Coordinator safety plan'), h('dl', { class: 'kv' },
+      h('dt', null, 'Emergency access'), h('dd', null, check.emergencyAccess),
+      h('dt', null, 'Equipment placement'), h('dd', null, check.equipmentPlacement),
+      h('dt', null, 'Crowd movement'), h('dd', null, check.crowdMovement),
+      h('dt', null, 'Additional restrictions'), h('dd', null, check.venueRestrictions || '—')))),
+  check.status === 'pending' ? h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'primary', onclick: () => safetyDecisionDialog(event.id, 'approve') }, 'Approve'),
+    h('button', { onclick: () => safetyDecisionDialog(event.id, 'request_changes') }, 'Request changes'),
+    h('button', { class: 'danger', onclick: () => safetyDecisionDialog(event.id, 'reject') }, 'Reject')) :
+    alertBox('info', `This safety review has already been ${label(check.status).toLowerCase()}.`));
+}, { roles: ['safety_officer'] });
+
 route('/notifications', async (root) => {
   const { notifications } = await api('/notifications');
   const unread = notifications.filter((n) => !n.readAt);
+  const performNotificationAction = async (action) => {
+    try {
+      const path = String(action.url || '').replace(/^\/api/, '');
+      await api(path, { method: action.method || 'POST' });
+      toast(`${action.label} complete.`, 'ok'); render();
+    } catch (err) { toast(err.message, 'error'); }
+  };
   root.append(pageHead('Notifications', `${unread.length} unread`,
     unread.length ? [h('button', { onclick: async () => { await Promise.all(unread.map((n) => api(`/notifications/${n.id}/read`, { method: 'PATCH' }))); render(); } }, 'Mark all as read')] : null),
   h('div', { class: 'card', 'data-tour': 'notifications' }, table([
@@ -1239,32 +1344,86 @@ route('/notifications', async (root) => {
     { title: 'When', class: 'nowrap', render: (n) => fmtDT(n.created_at || n.createdAt) },
     { title: '', render: (n) => h('div', { class: 'actions' },
       n.eventId && is('technical_support_staff', 'event_coordinator', 'event_coordinator_lead', 'safety_officer') ? h('a', { class: 'btn small', href: `#/events/${n.eventId}` }, 'Open event') : null,
+      is('attendee') && Array.isArray(n.metadata?.actions) ? n.metadata.actions.map((action) => h('button', { class: 'small primary', onclick: () => performNotificationAction(action) }, action.label)) : null,
       n.readAt ? null : h('button', { class: 'small', onclick: async () => { await api(`/notifications/${n.id}/read`, { method: 'PATCH' }); render(); } }, 'Mark read')) },
   ], notifications, { empty: 'You have no notifications.', rowClass: (n) => (n.readAt ? 'dim' : '') })));
 });
 
 route('/profile', async (root) => {
-  const { attendee: a } = await api('/attendees/profile');
+  const [{ attendee: a }, { notificationPreferences: prefs }] = await Promise.all([
+    api('/attendees/profile'), api('/attendees/preferences'),
+  ]);
   const errorSlot = h('div');
   const form = h('form', { onsubmit: async (e) => {
     e.preventDefault();
     clear(errorSlot);
     const d = formData(form);
     const body = {};
-    for (const k of ['firstName', 'lastName', 'phone', 'organization']) if ((d[k] || '') !== (a[k] || '')) body[k] = d[k];
-    if (!Object.keys(body).length) return toast('Nothing to save.');
+    for (const k of ['firstName', 'lastName', 'phone', 'organization', 'email']) if ((d[k] || '') !== (a[k] || '')) body[k] = d[k];
+    const preferenceBody = {
+      emailNotifications: form.emailNotifications.checked,
+      inAppNotifications: form.inAppNotifications.checked,
+    };
+    const preferencesChanged = preferenceBody.emailNotifications !== prefs.emailNotifications || preferenceBody.inAppNotifications !== prefs.inAppNotifications;
+    if (!Object.keys(body).length && !preferencesChanged) return toast('Nothing to save.');
     try {
-      const res = await api('/attendees/profile', { method: 'PATCH', body });
-      const u = session.user; session.set(null, { ...u, firstName: res.attendee?.firstName || u.firstName, lastName: res.attendee?.lastName || u.lastName });
+      const [res] = await Promise.all([
+        Object.keys(body).length ? api('/attendees/profile', { method: 'PATCH', body }) : Promise.resolve({ attendee: a }),
+        preferencesChanged ? api('/attendees/preferences', { method: 'PATCH', body: preferenceBody }) : Promise.resolve(null),
+      ]);
+      const u = session.user; session.set(null, { ...u, firstName: res.attendee?.firstName || u.firstName, lastName: res.attendee?.lastName || u.lastName, email: res.attendee?.email || u.email });
       toast('Profile saved.', 'ok'); render();
     } catch (err) { errorSlot.appendChild(errorBox(err)); }
   } },
   errorSlot,
   h('div', { class: 'form-grid' }, field('First name', input('firstName', { value: a.firstName || '' })), field('Last name', input('lastName', { value: a.lastName || '' }))),
   h('div', { class: 'form-grid' }, field('Phone', input('phone', { value: a.phone || '' })), field('Organisation', input('organization', { value: a.organization || '' }))),
-  field('Email', input('email', { value: a.email, disabled: true })),
+  field('Email', input('email', { type: 'email', value: a.email, required: true })),
+  h('h3', null, 'Notifications'),
+  h('label', { class: 'check' }, input('emailNotifications', { type: 'checkbox', checked: prefs.emailNotifications }), ' Email notifications'),
+  h('label', { class: 'check' }, input('inAppNotifications', { type: 'checkbox', checked: prefs.inAppNotifications }), ' In-app notifications'),
   h('button', { class: 'primary', type: 'submit' }, 'Save profile'));
   root.append(pageHead('My profile'), h('div', { class: 'card', style: { maxWidth: '640px' }, 'data-tour': 'profile' }, form));
+}, { roles: ['attendee'] });
+
+route('/registrations', async (root) => {
+  const [{ registrations }, { events }] = await Promise.all([
+    api('/attendees/registrations'), api('/attendees/registrations/events'),
+  ]);
+  const activeEventIds = new Set(registrations.filter((r) => r.status !== 'withdrawn').map((r) => r.eventId));
+  const register = async (event) => {
+    try {
+      await api('/attendees/registrations', { method: 'POST', body: { eventId: event.id } });
+      toast(`Registered for ${event.name}.`, 'ok'); render();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  const withdraw = async (registration) => {
+    try {
+      await api(`/attendees/registrations/${registration.id}/withdraw`, { method: 'POST' });
+      toast('Registration withdrawn; your place is available again.', 'ok'); render();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  const reconfirm = async (registration) => {
+    try {
+      await api(`/attendees/registrations/${registration.id}/reconfirm`, { method: 'POST' });
+      toast('Registration re-confirmed.', 'ok'); render();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  root.append(pageHead('Event registrations', 'Register for upcoming confirmed events and manage your places.'),
+    h('div', { class: 'card' }, h('h2', null, 'Upcoming events'), table([
+      { title: 'Event', render: (e) => h('strong', null, e.name) },
+      { title: 'When', render: (e) => fmtDT(e.startDatetime) },
+      { title: 'Places', render: (e) => `${e.availableCapacity} of ${e.registrationCapacity} available` },
+      { title: '', render: (e) => activeEventIds.has(e.id) ? pill('active', 'Registered') : h('button', { class: 'small primary', disabled: e.availableCapacity < 1, onclick: () => register(e) }, e.availableCapacity < 1 ? 'Full' : 'Register') },
+    ], events, { empty: 'No upcoming events are open for registration.' })),
+    h('div', { class: 'card' }, h('h2', null, 'My registrations'), table([
+      { title: 'Event', render: (r) => h('strong', null, r.event?.name || 'Event') },
+      { title: 'When', render: (r) => fmtDT(r.event?.startDatetime) },
+      { title: 'Status', render: (r) => pill(r.status) },
+      { title: '', render: (r) => h('div', { class: 'actions' },
+        r.canReconfirm ? h('button', { class: 'small primary', onclick: () => reconfirm(r) }, 'Re-confirm') : null,
+        r.canWithdraw ? h('button', { class: 'small danger', onclick: () => withdraw(r) }, 'Withdraw') : null) },
+    ], registrations, { empty: 'You have no event registrations.' })));
 }, { roles: ['attendee'] });
 
 // =====================================================================

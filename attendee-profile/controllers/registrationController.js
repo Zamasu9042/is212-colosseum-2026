@@ -5,6 +5,7 @@ const {
   EventRegistration,
   Notification,
 } = require('../../src/models');
+const { Op } = require('sequelize');
 const { sendWithdrawalEmail } = require('../../src/services/emailService');
 const { ACTIVE_REGISTRATION_STATUSES } = require('../../src/services/eventChangeNotificationService');
 
@@ -84,6 +85,39 @@ async function listRegistrations(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+// Attendees need a discovery endpoint as well as their own registrations.
+// Internal event-list endpoints intentionally exclude attendees, so exposing a
+// small public-to-attendees projection here keeps the access boundary intact.
+async function listRegisterableEvents(req, res, next) {
+  try {
+    const events = await Event.findAll({
+      where: {
+        status: REGISTRABLE_EVENT_STATUSES,
+        startDatetime: { [Op.gt]: new Date() },
+      },
+      include: [{ model: EventRequest, attributes: ['eventName', 'expectedAttendance'] }],
+      order: [['start_datetime', 'ASC']],
+    });
+
+    const items = await Promise.all(events.map(async (event) => {
+      const capacity = event.registrationCapacity ?? event.EventRequest?.expectedAttendance;
+      if (!Number.isInteger(capacity) || capacity < 1) return null;
+      const registered = await EventRegistration.count({
+        where: { eventId: event.id, status: ACTIVE_REGISTRATION_STATUSES },
+      });
+      return {
+        id: event.id,
+        name: event.EventRequest?.eventName || 'Untitled event',
+        startDatetime: event.startDatetime,
+        status: event.status,
+        registrationCapacity: capacity,
+        availableCapacity: Math.max(capacity - registered, 0),
+      };
+    }));
+    res.json({ events: items.filter(Boolean) });
+  } catch (err) { next(err); }
 }
 
 async function createRegistration(req, res, next) {
@@ -207,4 +241,4 @@ async function reconfirmRegistration(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { listRegistrations, createRegistration, withdrawRegistration, reconfirmRegistration, canWithdraw };
+module.exports = { listRegistrations, listRegisterableEvents, createRegistration, withdrawRegistration, reconfirmRegistration, canWithdraw };

@@ -31,6 +31,19 @@ describe('Web GUI hosting', () => {
     expect(appJs.text).toContain('existing venue and technical arrangements remain with the event');
   });
 
+  test('GUI exposes Safety Officer review and attendee registration workflows', async () => {
+    const appJs = await request(app).get('/app.js');
+    expect(appJs.text).toContain("n('/safety-review', 'Safety reviews')");
+    expect(appJs.text).toContain('Request safety review');
+    expect(appJs.text).toContain('Request changes');
+    expect(appJs.text).toContain("n('/registrations', 'Event registrations')");
+    expect(appJs.text).toContain('/attendees/registrations/events');
+    expect(appJs.text).toContain('Registration withdrawn; your place is available again.');
+    expect(appJs.text).toContain('/attendees/preferences');
+    expect(appJs.text).toContain('Email notifications');
+    expect(appJs.text).toContain('metadata?.actions');
+  });
+
   test('deep links fall back to index.html', async () => {
     const res = await request(app).get('/some/deep/link');
     expect(res.status).toBe(200);
