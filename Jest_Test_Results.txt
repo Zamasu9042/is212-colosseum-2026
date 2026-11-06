@@ -2,7 +2,7 @@
 > connectsphere-db-auth@1.0.0 test:coverage
 > node scripts/run-tests.js --coverage
 
-Created isolated test database: connectsphere_test_74764_7edeea8ea1
+Created isolated test database: connectsphere_test_88029_3af1d344a7
 Connected to database. Applying schema...
 ✅ Schema applied successfully.
 ➕ Created role: event_organiser
@@ -13,31 +13,31 @@ Connected to database. Applying schema...
 ➕ Created role: safety_officer
 ➕ Created role: attendee
 ✅ Role seeding complete.
-✓ Verified isolated test database: connectsphere_test_74764_7edeea8ea1
+✓ Verified isolated test database: connectsphere_test_88029_3af1d344a7
 PASS tests/authController.test.js
 PASS tests/eventRequest.review.test.js
 PASS tests/eventPlanning.test.js
+PASS tests/eventProgramme.test.js
 PASS tests/eventChangeRequest.test.js
 PASS tests/venueBooking.test.js
-PASS tests/eventProgramme.test.js
 PASS tests/operationalSafetyCheck.test.js
 PASS tests/equipment.reservation.test.js
 PASS tests/equipment.readiness.test.js
-PASS tests/venueConflictAudit.test.js
 PASS tests/roleAccessControl.test.js
-[POST /api/venues/conflicts] Error: Venue(s) not found: 00000000-0000-4000-8000-000000000000
-PASS tests/venue.conflicts.test.js
+PASS tests/venueConflictAudit.test.js
 PASS tests/venueHoldExpiry.test.js
 PASS tests/equipmentRequirements.test.js
 PASS tests/equipment.status.test.js
+[POST /api/venues/conflicts] Error: Venue(s) not found: 00000000-0000-4000-8000-000000000000
+PASS tests/venue.conflicts.test.js
 PASS tests/venue.search.test.js
-PASS tests/bugfixes.equipment.test.js
 PASS tests/bugfixes.venue.test.js
-PASS tests/eventRequest.amend.test.js
+PASS tests/bugfixes.equipment.test.js
+PASS tests/webGui.test.js
 [POST /api/attendees/registrations] Error: Registration is unavailable for this event.
 [POST /api/attendees/registrations] Error: Registration is unavailable for this event.
 PASS tests/registration.discovery.test.js
-PASS tests/webGui.test.js
+PASS tests/eventRequest.amend.test.js
 PASS tests/eventRequest.draft.test.js
 [POST /api/attendees/registrations] Error: Registration is unavailable for this event.
 PASS tests/registration.window.test.js
@@ -53,19 +53,19 @@ PASS tests/notificationPreferences.feed.test.js
 PASS attendee-profile/tests/registrationController.test.js
 PASS tests/holdExpiryService.test.js
 PASS tests/rbac.test.js
-PASS tests/holdExpiry.test.js
 PASS tests/venueConflicts.test.js
+PASS tests/holdExpiry.test.js
 PASS tests/equipmentAvailability.test.js
-PASS tests/venueAvailability.test.js
 PASS tests/databaseConfig.test.js
-PASS tests/emailService.eventChange.test.js
-PASS attendee-profile/tests/preferenceService.test.js
-PASS tests/eventChangeNotificationService.test.js
+PASS tests/venueAvailability.test.js
 PASS attendee-profile/tests/attendeeController.test.js
+PASS tests/eventChangeNotificationService.test.js
+PASS attendee-profile/tests/preferenceService.test.js
+PASS tests/emailService.eventChange.test.js
 ------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
 File                                | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s                                                               
 ------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
-All files                           |   90.82 |    84.33 |   94.84 |   93.24 |                                                                                 
+All files                           |   90.86 |    84.38 |   94.84 |   93.24 |                                                                                 
  attendee-profile                   |     100 |      100 |     100 |     100 |                                                                                 
   index.js                          |     100 |      100 |     100 |     100 |                                                                                 
  attendee-profile/controllers       |   83.05 |    85.48 |      90 |      88 |                                                                                 
@@ -112,7 +112,7 @@ All files                           |   90.82 |    84.33 |   94.84 |   93.24 |
   VenueHold.js                      |     100 |      100 |     100 |     100 |                                                                                 
   VenueUnavailability.js            |     100 |      100 |     100 |     100 |                                                                                 
   index.js                          |     100 |      100 |     100 |     100 |                                                                                 
- src/routes                         |   89.16 |    83.64 |   95.49 |   92.05 |                                                                                 
+ src/routes                         |   89.22 |    83.75 |   95.49 |   92.05 |                                                                                 
   authRoutes.js                     |     100 |      100 |     100 |     100 |                                                                                 
   equipmentRequirementRoutes.js     |   87.69 |       75 |     100 |   89.47 | 63-67,95,147                                                                    
   equipmentReservationRoutes.js     |   90.52 |    93.75 |     100 |   91.01 | 40,57,80,136,190,236,262,285                                                    
@@ -128,7 +128,7 @@ All files                           |   90.82 |    84.33 |   94.84 |   93.24 |
   userRoutes.js                     |   92.85 |      100 |     100 |   92.85 | 36                                                                              
   venueBookingRoutes.js             |   90.58 |    88.13 |     100 |   93.75 | 168,196,236,300,362,428,452,466-467,496,529,563                                 
   venueRoutes.js                    |   92.48 |    87.25 |   96.55 |   95.27 | 80,265,295,344,361,367,421                                                      
-  venueScheduleRoutes.js            |   96.34 |    89.83 |     100 |   97.27 | 164,210,231,288                                                                 
+  venueScheduleRoutes.js            |   96.95 |    91.52 |     100 |   97.27 | 164,210,231,288                                                                 
  src/services                       |   91.43 |    78.12 |   92.63 |   93.51 |                                                                                 
   bookingConflictAudit.js           |   98.07 |    82.35 |     100 |     100 | 48-81,115,135,160,166                                                           
   emailService.js                   |   65.21 |    47.82 |   83.33 |      65 | 25-42,49                                                                        
@@ -150,8 +150,8 @@ All files                           |   90.82 |    84.33 |   94.84 |   93.24 |
 ------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
 
 Test Suites: 42 passed, 42 total
-Tests:       537 passed, 537 total
+Tests:       540 passed, 540 total
 Snapshots:   0 total
-Time:        34.16 s, estimated 36 s
+Time:        35.124 s
 Ran all test suites.
-✓ Removed temporary test database: connectsphere_test_74764_7edeea8ea1
+✓ Removed temporary test database: connectsphere_test_88029_3af1d344a7
