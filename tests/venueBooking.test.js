@@ -381,4 +381,254 @@ describe('Venue bookings', () => {
       ).toBe(409);
     });
   });
+
+  // ---------------------------------------------------------------
+  // Post-Sprint 4 coverage additions (TC-146 to TC-158)
+  describe('Venue booking safety and lifecycle guards', () => {
+    it('rejects a venue booking for a completed event without creating a record', async () => {
+      const completedEvent = await makeEvent(organiser, coordinator, 40);
+      const venue = await makeVenue('Completed Event');
+      await completedEvent.update({ status: 'completed' });
+      const before = await VenueBooking.count({ where: { eventId: completedEvent.id } });
+
+      const res = await book(tCoordinator, completedEvent, venue);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'Cannot book venues for a completed event.' });
+      expect(await VenueBooking.count({ where: { eventId: completedEvent.id } })).toBe(before);
+    });
+
+    it('rejects a venue booking for a cancelled event without creating a record', async () => {
+      const cancelledEvent = await makeEvent(organiser, coordinator, 40);
+      const venue = await makeVenue('Cancelled Event');
+      await cancelledEvent.update({ status: 'cancelled' });
+      const before = await VenueBooking.count({ where: { eventId: cancelledEvent.id } });
+
+      const res = await book(tCoordinator, cancelledEvent, venue);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'Cannot book venues for a cancelled event.' });
+      expect(await VenueBooking.count({ where: { eventId: cancelledEvent.id } })).toBe(before);
+    });
+
+    it('requires request attendance when the event request has none', async () => {
+      const attendanceEvent = await makeEvent(organiser, coordinator, 1);
+      const venue = await makeVenue('Missing Attendance');
+      await EventRequest.update({ expectedAttendance: null }, { where: { id: attendanceEvent.eventRequestId } });
+      const before = await VenueBooking.count({ where: { eventId: attendanceEvent.id } });
+
+      const res = await request(app)
+        .post(`/api/events/${attendanceEvent.id}/venue-bookings`)
+        .set(auth(tCoordinator))
+        .send({ venueId: venue.id, ...slot(13, 15) });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        error: 'expectedAttendance is required because the event request has no expected attendance.',
+      });
+      expect(await VenueBooking.count({ where: { eventId: attendanceEvent.id } })).toBe(before);
+    });
+
+    it('refuses approval when an overlapping booking appears after submission', async () => {
+      const venue = await makeVenue('Approval Conflict');
+      const pendingEvent = await makeEvent(organiser, coordinator, 40);
+      const pending = (await book(tCoordinator, pendingEvent, venue, slot(9, 12))).body.booking;
+
+      await VenueBooking.create({
+        eventId: otherEvent.id,
+        venueId: venue.id,
+        requestedBy: otherCoordinator.id,
+        ...slot(10, 13),
+        expectedAttendance: 40,
+        status: 'approved',
+      });
+
+      const res = await request(app).post(`/api/venue-bookings/${pending.id}/approve`).set(auth(tStaff));
+      const after = await VenueBooking.findByPk(pending.id);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('This booking can no longer be approved.');
+      expect(res.body.failures.map((failure) => failure.check)).toContain('conflict');
+      expect(after.status).toBe('pending');
+      expect(after.reviewedBy).toBeNull();
+      expect(after.reviewedAt).toBeNull();
+    });
+
+    it('refuses a second approval of an approved booking without changing it', async () => {
+      const venue = await makeVenue('Second Approval');
+      const approvalEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, approvalEvent, venue)).body.booking;
+      expect((await request(app).post(`/api/venue-bookings/${booking.id}/approve`).set(auth(tStaff))).status).toBe(200);
+      const before = await VenueBooking.findByPk(booking.id);
+
+      const res = await request(app).post(`/api/venue-bookings/${booking.id}/approve`).set(auth(tStaff));
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'Only pending bookings can be reviewed (this one is approved).' });
+      expect(after.status).toBe('approved');
+      expect(after.reviewedBy).toBe(before.reviewedBy);
+      expect(after.reviewedAt).toEqual(before.reviewedAt);
+      expect(after.reviewReason).toBeNull();
+    });
+
+    it('refuses a second rejection of a rejected booking without changing it', async () => {
+      const venue = await makeVenue('Second Rejection');
+      const rejectionEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, rejectionEvent, venue)).body.booking;
+      expect(
+        (await request(app).post(`/api/venue-bookings/${booking.id}/reject`).set(auth(tStaff)).send({ reason: 'Initial reason' })).status
+      ).toBe(200);
+      const before = await VenueBooking.findByPk(booking.id);
+
+      const res = await request(app)
+        .post(`/api/venue-bookings/${booking.id}/reject`)
+        .set(auth(tStaff))
+        .send({ reason: 'Second reason' });
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'Only pending bookings can be reviewed (this one is rejected).' });
+      expect(after.status).toBe('rejected');
+      expect(after.reviewedBy).toBe(before.reviewedBy);
+      expect(after.reviewedAt).toEqual(before.reviewedAt);
+      expect(after.reviewReason).toBe('Initial reason');
+    });
+
+    it('returns an empty replacement venue list when no eligible venue matches', async () => {
+      const venue = await makeVenue('Replacement Search Source');
+      const replacementEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, replacementEvent, venue)).body.booking;
+      await VenueBooking.update({ status: 'needs_replacement' }, { where: { id: booking.id } });
+
+      const res = await request(app)
+        .get(`/api/venue-bookings/${booking.id}/replacement-venues`)
+        .query({ search: `No matching venue ${suffix}` })
+        .set(auth(tCoordinator));
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ bookingId: booking.id, venues: [], count: 0 });
+      expect(after.status).toBe('needs_replacement');
+    });
+
+    it('rejects a reschedule whose end is not after its start without changing the booking', async () => {
+      const venue = await makeVenue('Invalid Reschedule');
+      const rescheduleEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, rescheduleEvent, venue, slot(9, 12))).body.booking;
+      const before = await VenueBooking.findByPk(booking.id);
+
+      const res = await request(app)
+        .patch(`/api/venue-bookings/${booking.id}`)
+        .set(auth(tCoordinator))
+        .send(slot(14, 13));
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'endDatetime must be after startDatetime.' });
+      expect(after.status).toBe(before.status);
+      expect(after.startDatetime).toEqual(before.startDatetime);
+      expect(after.endDatetime).toEqual(before.endDatetime);
+      expect(after.requirements).toBe(before.requirements);
+    });
+
+    it('rejects rescheduling a non-pending or non-approved booking without changing it', async () => {
+      const venue = await makeVenue('Rejected Reschedule');
+      const rescheduleEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, rescheduleEvent, venue, slot(9, 12))).body.booking;
+      await VenueBooking.update({ status: 'rejected', reviewReason: 'Not suitable' }, { where: { id: booking.id } });
+      const before = await VenueBooking.findByPk(booking.id);
+
+      const res = await request(app)
+        .patch(`/api/venue-bookings/${booking.id}`)
+        .set(auth(tCoordinator))
+        .send(slot(13, 15));
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'A rejected booking cannot be changed.' });
+      expect(after.status).toBe('rejected');
+      expect(after.startDatetime).toEqual(before.startDatetime);
+      expect(after.endDatetime).toEqual(before.endDatetime);
+      expect(after.reviewReason).toBe('Not suitable');
+    });
+
+    it('refuses a reschedule that conflicts with an existing booking without changing it', async () => {
+      const venue = await makeVenue('Reschedule Conflict');
+      const rescheduleEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, rescheduleEvent, venue, slot(9, 12))).body.booking;
+      await VenueBooking.create({
+        eventId: otherEvent.id,
+        venueId: venue.id,
+        requestedBy: otherCoordinator.id,
+        ...slot(14, 16),
+        expectedAttendance: 40,
+        status: 'approved',
+      });
+      const before = await VenueBooking.findByPk(booking.id);
+
+      const res = await request(app)
+        .patch(`/api/venue-bookings/${booking.id}`)
+        .set(auth(tCoordinator))
+        .send(slot(14, 16));
+      const after = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toBe('The venue booking request did not pass the venue checks.');
+      expect(res.body.failures.map((failure) => failure.check)).toContain('conflict');
+      expect(after.status).toBe(before.status);
+      expect(after.startDatetime).toEqual(before.startDatetime);
+      expect(after.endDatetime).toEqual(before.endDatetime);
+    });
+
+    it('refuses a replacement venue that fails booking checks and keeps the original awaiting replacement', async () => {
+      const originalVenue = await makeVenue('Replacement Original');
+      const unsuitableVenue = await makeVenue('Replacement Unsuitable', { capacity: 10 });
+      const replacementEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, replacementEvent, originalVenue)).body.booking;
+      await VenueBooking.update({ status: 'needs_replacement' }, { where: { id: booking.id } });
+      const before = await VenueBooking.count({ where: { eventId: replacementEvent.id } });
+
+      const res = await request(app)
+        .post(`/api/venue-bookings/${booking.id}/replace`)
+        .set(auth(tCoordinator))
+        .send({ venueId: unsuitableVenue.id });
+      const originalAfter = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toBe('The venue booking request did not pass the venue checks.');
+      expect(res.body.failures.map((failure) => failure.check)).toContain('suitability');
+      expect(originalAfter.status).toBe('needs_replacement');
+      expect(await VenueBooking.count({ where: { eventId: replacementEvent.id } })).toBe(before);
+    });
+
+    it('returns 404 when replacement venues are requested for an unknown booking', async () => {
+      const res = await request(app)
+        .get('/api/venue-bookings/00000000-0000-4000-8000-000000000000/replacement-venues')
+        .set(auth(tCoordinator));
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Venue booking not found.' });
+    });
+
+    it('rejects a replacement request whose end is not after its start without changing the original', async () => {
+      const originalVenue = await makeVenue('Replacement Invalid Time Original');
+      const spareVenue = await makeVenue('Replacement Invalid Time Spare');
+      const replacementEvent = await makeEvent(organiser, coordinator, 40);
+      const booking = (await book(tCoordinator, replacementEvent, originalVenue, slot(9, 12))).body.booking;
+      await VenueBooking.update({ status: 'needs_replacement' }, { where: { id: booking.id } });
+      const before = await VenueBooking.count({ where: { eventId: replacementEvent.id } });
+
+      const res = await request(app)
+        .post(`/api/venue-bookings/${booking.id}/replace`)
+        .set(auth(tCoordinator))
+        .send({ venueId: spareVenue.id, ...slot(14, 13) });
+      const originalAfter = await VenueBooking.findByPk(booking.id);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'endDatetime must be after startDatetime.' });
+      expect(originalAfter.status).toBe('needs_replacement');
+      expect(await VenueBooking.count({ where: { eventId: replacementEvent.id } })).toBe(before);
+    });
+  });
 });
