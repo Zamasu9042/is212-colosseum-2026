@@ -157,6 +157,27 @@ describe('Coordinator assignment and role access control', () => {
     );
   });
 
+  test('initial Coordinator assignment notifies the newly assigned Coordinator', async () => {
+    const eventRequest = await makeEventRequest(organiser, 'initial assignment notification');
+
+    const assignment = await request(app)
+      .patch(`/api/event-requests/${eventRequest.id}/assignment`)
+      .set(auth(leadAToken))
+      .send({ coordinatorId: coordinatorB.id });
+
+    expect(assignment.status).toBe(200);
+    const notifications = (await Notification.findAll({
+      where: { type: 'event_coordinator_assigned', userId: coordinatorB.id },
+    })).filter((notification) => notification.message.includes(eventRequest.eventName));
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      userId: coordinatorB.id,
+      type: 'event_coordinator_assigned',
+      eventId: null,
+    });
+    expect(notifications[0].message).toContain('You have been assigned to coordinate event request:');
+  });
+
   test('a Lead immediately reassigns a confirmed event, preserves arrangements, updates access, and notifies relevant users', async () => {
     const eventRequest = await makeEventRequest(organiser, 'linked event', {
       status: 'approved',

@@ -231,4 +231,20 @@ describe('Event Request Routes', () => {
     expect(submitRes.status).toBe(200);
     expect(submitRes.body.eventRequest.assignedCoordinatorId).toBeNull();
   });
+
+  test.each([0, -1])('rejects invalid expected attendance value %i without creating a draft', async (expectedAttendance) => {
+    const countBefore = await EventRequest.count();
+
+    const res = await request(app)
+      .post('/api/event-requests')
+      .set('Authorization', `Bearer ${organiserToken}`)
+      .send({ ...completeRequestPayload, expectedAttendance });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Validation failed.');
+    expect(res.body.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'expectedAttendance' }),
+    ]));
+    expect(await EventRequest.count()).toBe(countBefore);
+  });
 });
