@@ -400,4 +400,88 @@ describe('Event Programme and Agenda', () => {
     const res = await request(app).post(`/api/events/${event.id}/programme`).send();
     expect(res.status).toBe(401);
   });
+
+  test('rejects creating a second programme for the same event', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('This event already has a programme.');
+  });
+
+  test('returns not found when creating a programme for an unknown event', async () => {
+    const res = await request(app).post('/api/events/00000000-0000-4000-8000-000000000000/programme')
+      .set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Event not found.');
+  });
+
+  test('allows the owning organiser to view a draft programme', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).get(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${organiserToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.programme.status).toBe('draft');
+  });
+
+  test('returns not found when viewing an event with no programme', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    const res = await request(app).get(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('This event has no programme yet.');
+  });
+
+  test('rejects an agenda item whose end time is not after its start time', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).post(`/api/events/${event.id}/programme/items`).set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ title: 'Invalid', startTime: '2026-11-01T02:00:00.000Z', endTime: '2026-11-01T02:00:00.000Z' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('endTime must be after startTime.');
+  });
+
+  test('rejects an invalid agenda-item reorder without changing items', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const item = await request(app).post(`/api/events/${event.id}/programme/items`).set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ title: 'Only item', startTime: '2026-11-01T01:00:00.000Z', endTime: '2026-11-01T02:00:00.000Z' });
+    const res = await request(app).patch(`/api/events/${event.id}/programme/items/reorder`).set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ order: ['00000000-0000-4000-8000-000000000000'] });
+    expect(res.status).toBe(400);
+    const viewed = await request(app).get(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(viewed.body.agendaItems[0].id).toBe(item.body.agendaItem.id);
+  });
+
+  test('rejects editing an agenda item that does not belong to the programme', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).patch(`/api/events/${event.id}/programme/items/00000000-0000-4000-8000-000000000000`)
+      .set('Authorization', `Bearer ${coordinatorToken}`).send({ title: 'No item' });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Agenda item not found.');
+  });
+
+  test('rejects editing a published programme without changing its agenda item', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const item = await request(app).post(`/api/events/${event.id}/programme/items`).set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ title: 'Locked', startTime: '2026-11-01T01:00:00.000Z', endTime: '2026-11-01T02:00:00.000Z' });
+    await request(app).post(`/api/events/${event.id}/programme/publish`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).patch(`/api/events/${event.id}/programme/items/${item.body.agendaItem.id}`)
+      .set('Authorization', `Bearer ${coordinatorToken}`).send({ title: 'Changed' });
+    expect(res.status).toBe(409);
+    const viewed = await request(app).get(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(viewed.body.agendaItems[0].title).toBe('Locked');
+  });
+
+  test('rejects publishing a programme that is already published', async () => {
+    const { event } = await createApprovedEvent(organiser, coordinator);
+    await request(app).post(`/api/events/${event.id}/programme`).set('Authorization', `Bearer ${coordinatorToken}`);
+    await request(app).post(`/api/events/${event.id}/programme/items`).set('Authorization', `Bearer ${coordinatorToken}`)
+      .send({ title: 'Ready', startTime: '2026-11-01T01:00:00.000Z', endTime: '2026-11-01T02:00:00.000Z' });
+    await request(app).post(`/api/events/${event.id}/programme/publish`).set('Authorization', `Bearer ${coordinatorToken}`);
+    const res = await request(app).post(`/api/events/${event.id}/programme/publish`).set('Authorization', `Bearer ${coordinatorToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('This programme is already published.');
+  });
 });

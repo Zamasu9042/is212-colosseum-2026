@@ -311,4 +311,19 @@ describe('SCRUM-21 Reserve Equipment for an Event', () => {
       expect((await reserve({ id: res.body.event.id }, { equipmentId: item.id })).status).toBe(201);
     });
   });
+
+  test('rejects reservations for equipment marked in repair without changing its status', async () => {
+    const item = await fx.makeEquipment('Repair guard', { status: 'in_repair' });
+    const res = await reserve(event, { equipmentId: item.id });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('EQUIPMENT_NOT_RESERVABLE');
+    expect((await Equipment.findByPk(item.id)).status).toBe('in_repair');
+  });
+
+  test('rejects a reservation quantity that is not a positive whole number', async () => {
+    const item = await fx.makeEquipment('Quantity guard');
+    const res = await reserve(event, { equipmentId: item.id, quantity: 0 });
+    expect(res.status).toBe(400);
+    expect((await Equipment.findByPk(item.id)).status).toBe('available');
+  });
 });

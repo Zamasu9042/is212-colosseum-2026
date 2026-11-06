@@ -211,4 +211,19 @@ describe('computeAvailability', () => {
       eventIds: expect.arrayContaining(['confirmed-event', 'tentative-event']),
     })]);
   });
+
+  test('returns no calendar slots for an invalid or empty range', () => {
+    expect(buildAvailabilitySlots(venue(), [], '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z')).toEqual([]);
+  });
+
+  test('calendar renders a booking and an unavailability period with their own references', () => {
+    const slots = buildAvailabilitySlots(venue({ setupMinutes: 0, teardownMinutes: 0 }), [], '2026-10-01T09:00:00Z', '2026-10-01T12:00:00Z', {
+      bookings: [{ id: 'booking-1', eventId: 'event-1', status: 'approved', startDatetime: '2026-10-01T09:00:00Z', endDatetime: '2026-10-01T10:00:00Z' }],
+      unavailability: [{ id: 'period-1', reason: 'Cleaning', startDatetime: '2026-10-01T10:00:00Z', endDatetime: '2026-10-01T11:00:00Z' }],
+    });
+    expect(slots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ state: AVAILABILITY_STATES.CONFIRMED_BOOKING, venueBookingId: 'booking-1' }),
+      expect.objectContaining({ state: AVAILABILITY_STATES.TEMPORARILY_UNAVAILABLE, unavailabilityId: 'period-1', reason: 'Cleaning' }),
+    ]));
+  });
 });

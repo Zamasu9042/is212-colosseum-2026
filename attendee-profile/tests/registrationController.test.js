@@ -9,7 +9,14 @@ jest.mock('../../src/services/emailService', () => ({ sendWithdrawalEmail: jest.
 
 const { sequelize, Event, EventRegistration, Notification } = require('../../src/models');
 const { sendWithdrawalEmail } = require('../../src/services/emailService');
-const { createRegistration, withdrawRegistration, listRegisterableEvents, canWithdraw } = require('../controllers/registrationController');
+const {
+  createRegistration,
+  withdrawRegistration,
+  reconfirmRegistration,
+  listRegisterableEvents,
+  registrationAvailability,
+  canWithdraw,
+} = require('../controllers/registrationController');
 
 function response() {
   const res = {};
@@ -138,5 +145,137 @@ describe('Attendee registration withdrawal', () => {
     expect(res.json).toHaveBeenCalledWith({ events: [expect.objectContaining({
       id: event.id, name: 'ConnectSphere Demo', registrationCapacity: 10, availableCapacity: 3, registrationOpen: true,
     })] });
+  });
+
+  test('reports registration as unavailable before the configured window opens', () => {
+    const event = buildEvent();
+    const nowBeforeOpening = new Date(event.registrationStartDatetime.getTime() - 1);
+
+    expect(registrationAvailability(event, { availableCapacity: 5, now: nowBeforeOpening })).toEqual({
+      registrationOpen: false,
+      registrationUnavailableReason: 'Registration has not opened yet.',
+    });
+  });
+
+  test('reports registration as unavailable after the configured window closes', () => {
+    const event = buildEvent();
+    const nowAfterClosing = new Date(event.registrationEndDatetime.getTime());
+
+    expect(registrationAvailability(event, { availableCapacity: 5, now: nowAfterClosing })).toEqual({
+      registrationOpen: false,
+      registrationUnavailableReason: 'Registration window has closed.',
+    });
+  });
+
+  test('rejects a duplicate registration while capacity remains available', async () => {
+    const event = buildEvent();
+    event.availableCapacity = 6;
+    const registration = buildRegistration();
+    Event.findByPk.mockResolvedValue(event);
+    EventRegistration.count.mockResolvedValue(4);
+    EventRegistration.findOne.mockResolvedValue(registration);
+    const next = jest.fn();
+
+    await createRegistration({ body: { eventId: event.id }, user: attendee }, response(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      status: 409,
+      message: 'You already have a registration for this event.',
+    }));
+    expect(EventRegistration.create).not.toHaveBeenCalled();
+    expect(event.update).not.toHaveBeenCalled();
+  });
+
+  test('withdraws successfully without sending notifications when both notification preferences are disabled', async () => {
+    const event = buildEvent();
+    const registration = buildRegistration();
+    const optedOutAttendee = {
+      ...attendee,
+      communicationPrefs: { emailNotifications: false, inAppNotifications: false },
+    };
+    EventRegistration.findByPk.mockResolvedValue(registration);
+    Event.findByPk.mockResolvedValue(event);
+    EventRegistration.count.mockResolvedValue(5);
+    const res = response();
+
+    await withdrawRegistration({ params: { id: registration.id }, user: optedOutAttendee }, res, jest.fn());
+
+    expect(registration.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'withdrawn' }), expect.any(Object));
+    expect(event.update).toHaveBeenCalledWith({ availableCapacity: 6 }, expect.any(Object));
+    expect(Notification.create).not.toHaveBeenCalled();
+    expect(sendWithdrawalEmail).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ email: { sent: false, skipped: true } }));
+  });
+
+  test('keeps a withdrawal successful when the confirmation email fails', async () => {
+    const event = buildEvent();
+    const registration = buildRegistration();
+    EventRegistration.findByPk.mockResolvedValue(registration);
+    Event.findByPk.mockResolvedValue(event);
+    EventRegistration.count.mockResolvedValue(5);
+    sendWithdrawalEmail.mockRejectedValue(new Error('SMTP unavailable'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = response();
+
+    await withdrawRegistration({ params: { id: registration.id }, user: attendee }, res, jest.fn());
+
+    expect(registration.update).toHaveBeenCalledWith(expect.objectContaining({ status: 'withdrawn' }), expect.any(Object));
+    expect(Notification.create).toHaveBeenCalledWith(expect.objectContaining({ type: 'registration_withdrawn' }), expect.any(Object));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      availableCapacity: 6,
+      email: { sent: false, error: 'Email delivery failed.' },
+    }));
+    errorSpy.mockRestore();
+  });
+
+  test('rejects reconfirmation when the registration is not awaiting reconfirmation', async () => {
+    const event = buildEvent();
+    const registration = buildRegistration();
+    EventRegistration.findByPk.mockResolvedValue(registration);
+    Event.findByPk.mockResolvedValue(event);
+    const next = jest.fn();
+
+    await reconfirmRegistration({ params: { id: registration.id }, user: attendee }, response(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      status: 409,
+      message: 'This registration does not require re-confirmation.',
+    }));
+    expect(registration.update).not.toHaveBeenCalled();
+    expect(Notification.create).not.toHaveBeenCalled();
+  });
+
+  test('rejects registration when the event has no configured registration capacity', async () => {
+    const event = buildEvent();
+    event.registrationCapacity = null;
+    event.availableCapacity = null;
+    event.EventRequest.expectedAttendance = null;
+    Event.findByPk.mockResolvedValue(event);
+    const next = jest.fn();
+
+    await createRegistration({ body: { eventId: event.id }, user: attendee }, response(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      status: 409,
+      message: 'Registration capacity has not been configured for this event.',
+    }));
+    expect(EventRegistration.count).not.toHaveBeenCalled();
+    expect(EventRegistration.create).not.toHaveBeenCalled();
+  });
+
+  test('reports registration as unavailable when the event is not confirmed', () => {
+    const event = buildEvent();
+    event.status = 'planning';
+    expect(registrationAvailability(event, { availableCapacity: 5, now })).toEqual({
+      registrationOpen: false,
+      registrationUnavailableReason: 'Event is not confirmed.',
+    });
+  });
+
+  test('does not allow withdrawal for an already withdrawn registration', () => {
+    const event = buildEvent();
+    const registration = buildRegistration();
+    registration.status = 'withdrawn';
+    expect(canWithdraw(registration, event, now)).toBe(false);
   });
 });
