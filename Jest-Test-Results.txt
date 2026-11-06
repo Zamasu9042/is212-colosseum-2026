@@ -1,0 +1,157 @@
+
+> connectsphere-db-auth@1.0.0 test:coverage
+> node scripts/run-tests.js --coverage
+
+Created isolated test database: connectsphere_test_74764_7edeea8ea1
+Connected to database. Applying schema...
+✅ Schema applied successfully.
+➕ Created role: event_organiser
+➕ Created role: event_coordinator
+➕ Created role: event_coordinator_lead
+➕ Created role: venue_staff
+➕ Created role: technical_support_staff
+➕ Created role: safety_officer
+➕ Created role: attendee
+✅ Role seeding complete.
+✓ Verified isolated test database: connectsphere_test_74764_7edeea8ea1
+PASS tests/authController.test.js
+PASS tests/eventRequest.review.test.js
+PASS tests/eventPlanning.test.js
+PASS tests/eventChangeRequest.test.js
+PASS tests/venueBooking.test.js
+PASS tests/eventProgramme.test.js
+PASS tests/operationalSafetyCheck.test.js
+PASS tests/equipment.reservation.test.js
+PASS tests/equipment.readiness.test.js
+PASS tests/venueConflictAudit.test.js
+PASS tests/roleAccessControl.test.js
+[POST /api/venues/conflicts] Error: Venue(s) not found: 00000000-0000-4000-8000-000000000000
+PASS tests/venue.conflicts.test.js
+PASS tests/venueHoldExpiry.test.js
+PASS tests/equipmentRequirements.test.js
+PASS tests/equipment.status.test.js
+PASS tests/venue.search.test.js
+PASS tests/bugfixes.equipment.test.js
+PASS tests/bugfixes.venue.test.js
+PASS tests/eventRequest.amend.test.js
+[POST /api/attendees/registrations] Error: Registration is unavailable for this event.
+[POST /api/attendees/registrations] Error: Registration is unavailable for this event.
+PASS tests/registration.discovery.test.js
+PASS tests/webGui.test.js
+PASS tests/eventRequest.draft.test.js
+[POST /api/attendees/registrations] Error: Registration is unavailable for this event.
+PASS tests/registration.window.test.js
+PASS tests/eventRequest.submit.test.js
+PASS tests/eventChangeNotifications.integration.test.js
+PASS tests/password.test.js
+[POST /api/venues] SequelizeDatabaseError: new row for relation "venues" violates check constraint "venues_status_check"
+[POST /api/venues] SequelizeValidationError: notNull Violation: Venue.capacity cannot be null
+PASS tests/errorHandler.test.js
+PASS tests/auth.logout.test.js
+PASS attendee-profile/tests/attendeeRoutes.test.js
+PASS tests/notificationPreferences.feed.test.js
+PASS attendee-profile/tests/registrationController.test.js
+PASS tests/holdExpiryService.test.js
+PASS tests/rbac.test.js
+PASS tests/holdExpiry.test.js
+PASS tests/venueConflicts.test.js
+PASS tests/equipmentAvailability.test.js
+PASS tests/venueAvailability.test.js
+PASS tests/databaseConfig.test.js
+PASS tests/emailService.eventChange.test.js
+PASS attendee-profile/tests/preferenceService.test.js
+PASS tests/eventChangeNotificationService.test.js
+PASS attendee-profile/tests/attendeeController.test.js
+------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
+File                                | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s                                                               
+------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
+All files                           |   90.82 |    84.33 |   94.84 |   93.24 |                                                                                 
+ attendee-profile                   |     100 |      100 |     100 |     100 |                                                                                 
+  index.js                          |     100 |      100 |     100 |     100 |                                                                                 
+ attendee-profile/controllers       |   83.05 |    85.48 |      90 |      88 |                                                                                 
+  attendeeController.js             |   85.36 |    93.33 |     100 |   84.21 | 31,74,83,90,99,110                                                              
+  registrationController.js         |   82.35 |    82.97 |    87.5 |   89.28 | 70,98-106,144,152,166,190,240,246,252                                           
+ attendee-profile/routes            |     100 |      100 |     100 |     100 |                                                                                 
+  attendeeRoutes.js                 |     100 |      100 |     100 |     100 |                                                                                 
+  registrationRoutes.js             |     100 |      100 |     100 |     100 |                                                                                 
+ attendee-profile/services          |     100 |    82.35 |     100 |     100 |                                                                                 
+  preferenceService.js              |     100 |    82.35 |     100 |     100 | 11,27-28                                                                        
+ attendee-profile/validators        |     100 |    94.11 |     100 |     100 |                                                                                 
+  attendeeValidator.js              |     100 |    94.11 |     100 |     100 | 76                                                                              
+ src                                |    92.3 |       75 |   66.66 |   95.65 |                                                                                 
+  app.js                            |    92.3 |       75 |   66.66 |   95.65 | 38                                                                              
+ src/config                         |     100 |    97.05 |     100 |     100 |                                                                                 
+  databaseConfig.js                 |     100 |      100 |     100 |     100 |                                                                                 
+  db.js                             |     100 |       50 |     100 |     100 | 15                                                                              
+ src/controllers                    |    82.5 |    83.33 |     100 |   83.54 |                                                                                 
+  authController.js                 |    82.5 |    83.33 |     100 |   83.54 | 29,53,58-62,82,90,130,138,145,159,184,201,212                                   
+ src/middleware                     |   93.84 |    92.72 |     100 |   93.54 |                                                                                 
+  auth.js                           |   95.83 |    94.44 |     100 |   95.65 | 58                                                                              
+  errorHandler.js                   |   93.75 |       92 |     100 |   93.75 | 41                                                                              
+  rbac.js                           |   89.47 |       90 |     100 |   88.23 | 42,51                                                                           
+  validate.js                       |     100 |      100 |     100 |     100 |                                                                                 
+ src/models                         |     100 |      100 |     100 |     100 |                                                                                 
+  AgendaItem.js                     |     100 |      100 |     100 |     100 |                                                                                 
+  ClientOrganisation.js             |     100 |      100 |     100 |     100 |                                                                                 
+  Equipment.js                      |     100 |      100 |     100 |     100 |                                                                                 
+  EquipmentReservation.js           |     100 |      100 |     100 |     100 |                                                                                 
+  Event.js                          |     100 |      100 |     100 |     100 |                                                                                 
+  EventChangeLog.js                 |     100 |      100 |     100 |     100 |                                                                                 
+  EventChangeRequest.js             |     100 |      100 |     100 |     100 |                                                                                 
+  EventEquipmentRequest.js          |     100 |      100 |     100 |     100 |                                                                                 
+  EventProgramme.js                 |     100 |      100 |     100 |     100 |                                                                                 
+  EventRegistration.js              |     100 |      100 |     100 |     100 |                                                                                 
+  EventRequest.js                   |     100 |      100 |     100 |     100 |                                                                                 
+  Notification.js                   |     100 |      100 |     100 |     100 |                                                                                 
+  OperationalSafetyCheck.js         |     100 |      100 |     100 |     100 |                                                                                 
+  RefreshToken.js                   |     100 |      100 |     100 |     100 |                                                                                 
+  Role.js                           |     100 |      100 |     100 |     100 |                                                                                 
+  User.js                           |     100 |      100 |     100 |     100 |                                                                                 
+  Venue.js                          |     100 |      100 |     100 |     100 |                                                                                 
+  VenueBooking.js                   |     100 |      100 |     100 |     100 |                                                                                 
+  VenueHold.js                      |     100 |      100 |     100 |     100 |                                                                                 
+  VenueUnavailability.js            |     100 |      100 |     100 |     100 |                                                                                 
+  index.js                          |     100 |      100 |     100 |     100 |                                                                                 
+ src/routes                         |   89.16 |    83.64 |   95.49 |   92.05 |                                                                                 
+  authRoutes.js                     |     100 |      100 |     100 |     100 |                                                                                 
+  equipmentRequirementRoutes.js     |   87.69 |       75 |     100 |   89.47 | 63-67,95,147                                                                    
+  equipmentReservationRoutes.js     |   90.52 |    93.75 |     100 |   91.01 | 40,57,80,136,190,236,262,285                                                    
+  equipmentRoutes.js                |   92.85 |    89.88 |   94.73 |   94.21 | 103,161,183,211,286,317-321                                                     
+  eventChangeRequestRoutes.js       |    88.8 |    85.29 |   93.33 |   90.08 | 62,166,197,210-217,250,261-262,371,396                                          
+  eventPlanningRoutes.js            |   93.47 |     90.9 |     100 |      95 | 57,146                                                                          
+  eventProgrammeRoutes.js           |   81.87 |    77.22 |   94.73 |   87.91 | 102,135,152,158,184,210,216,237,254,271,283-285,292,307,313,324,340,357         
+  eventRequestRoutes.js             |   86.72 |    81.39 |     100 |   89.74 | 185,215,238,261,283,309,331,347,351,384,415,418,481,516,601,648,651,669,698,723 
+  eventRoutes.js                    |   82.35 |    78.08 |   91.66 |   87.77 | 54,86,125,161,169,172,175,189,199-200,226                                       
+  index.js                          |     100 |      100 |     100 |     100 |                                                                                 
+  notificationRoutes.js             |      84 |    66.66 |     100 |    91.3 | 30,50                                                                           
+  operationalSafetyCheckRoutes.js   |   82.24 |     75.6 |   70.58 |   87.77 | 57-61,71-78,96,121,152,192,213                                                  
+  userRoutes.js                     |   92.85 |      100 |     100 |   92.85 | 36                                                                              
+  venueBookingRoutes.js             |   90.58 |    88.13 |     100 |   93.75 | 168,196,236,300,362,428,452,466-467,496,529,563                                 
+  venueRoutes.js                    |   92.48 |    87.25 |   96.55 |   95.27 | 80,265,295,344,361,367,421                                                      
+  venueScheduleRoutes.js            |   96.34 |    89.83 |     100 |   97.27 | 164,210,231,288                                                                 
+ src/services                       |   91.43 |    78.12 |   92.63 |   93.51 |                                                                                 
+  bookingConflictAudit.js           |   98.07 |    82.35 |     100 |     100 | 48-81,115,135,160,166                                                           
+  emailService.js                   |   65.21 |    47.82 |   83.33 |      65 | 25-42,49                                                                        
+  equipmentReservationService.js    |   92.85 |    78.94 |      88 |   95.71 | 180,396-401                                                                     
+  eventChangeNotificationService.js |     100 |    90.62 |     100 |     100 | 21,59                                                                           
+  eventChangeService.js             |   95.12 |    84.03 |     100 |   98.11 | 172,351                                                                         
+  holdExpiryService.js              |   73.01 |    46.66 |   78.57 |      75 | 141-160                                                                         
+  venueConflictService.js           |     100 |      100 |     100 |     100 |                                                                                 
+ src/utils                          |   95.93 |     89.6 |   95.65 |   97.61 |                                                                                 
+  bookingChecks.js                  |     100 |      100 |     100 |     100 |                                                                                 
+  equipmentAvailability.js          |     100 |     91.8 |     100 |     100 | 46,146,156,178                                                                  
+  holdExpiry.js                     |     100 |    95.83 |     100 |     100 | 87,120                                                                          
+  jwt.js                            |   89.28 |    58.33 |     100 |   96.15 | 11                                                                              
+  password.js                       |     100 |     87.5 |     100 |     100 | 3                                                                               
+  venueAvailability.js              |      89 |     79.8 |      80 |   92.94 | 45,162,187-188,242,255                                                          
+  venueConflicts.js                 |     100 |      100 |     100 |     100 |                                                                                 
+ tests/helpers                      |     100 |      100 |     100 |     100 |                                                                                 
+  equipmentFixtures.js              |     100 |      100 |     100 |     100 |                                                                                 
+------------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------
+
+Test Suites: 42 passed, 42 total
+Tests:       537 passed, 537 total
+Snapshots:   0 total
+Time:        34.16 s, estimated 36 s
+Ran all test suites.
+✓ Removed temporary test database: connectsphere_test_74764_7edeea8ea1
