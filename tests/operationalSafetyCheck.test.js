@@ -24,13 +24,13 @@ async function eventFor(organiser, coordinator, venue) {
     equipmentRequirements: 'Projector and microphones', status: 'approved',
   });
   return Event.create({
-    eventRequestId: eventRequest.id, coordinatorId: coordinator.id, venueId: venue.id,
+    eventRequestId: eventRequest.id, coordinatorId: coordinator.id, venueId: venue?.id,
     startDatetime: new Date('2027-06-01T09:00:00Z'), endDatetime: new Date('2027-06-01T12:00:00Z'), status: 'planning',
   });
 }
 
 describe('Operational safety check gate', () => {
-  let organiser, coordinator, safetyOfficer, otherCoordinator, venue, event, coordinatorToken, safetyToken;
+  let organiser, coordinator, safetyOfficer, otherCoordinator, venue, event, coordinatorToken, safetyToken, otherCoordinatorToken;
   beforeAll(async () => {
     organiser = await user(ROLE_NAMES.EVENT_ORGANISER, 'organiser');
     coordinator = await user(ROLE_NAMES.EVENT_COORDINATOR, 'coordinator');
@@ -40,6 +40,7 @@ describe('Operational safety check gate', () => {
     event = await eventFor(organiser, coordinator, venue);
     coordinatorToken = await login(coordinator);
     safetyToken = await login(safetyOfficer);
+    otherCoordinatorToken = await login(otherCoordinator);
   });
   afterAll(async () => { await sequelize.close(); });
 
@@ -50,6 +51,26 @@ describe('Operational safety check gate', () => {
     crowdMovement: 'Entry at north doors, exit through south doors.',
     venueRestrictions: 'No open flames.',
   });
+
+  async function submitSafetyCheck(targetEvent) {
+    const res = await request(app).post(`/api/events/${targetEvent.id}/operational-safety-check`)
+      .set(auth(coordinatorToken)).send(submission());
+    expect(res.status).toBe(201);
+    return res;
+  }
+
+  async function approveSafetyCheck(targetEvent) {
+    const res = await request(app).patch(`/api/events/${targetEvent.id}/operational-safety-check/decision`)
+      .set(auth(safetyToken)).send({ decision: 'approve' });
+    expect(res.status).toBe(200);
+    return res;
+  }
+
+  async function pendingEvent() {
+    const targetEvent = await eventFor(organiser, coordinator, venue);
+    await submitSafetyCheck(targetEvent);
+    return targetEvent;
+  }
 
   test('requires a coordinator to submit confirmed arrangement information and exposes the safety context', async () => {
     const created = await request(app).post(`/api/events/${event.id}/operational-safety-check`)
@@ -101,5 +122,144 @@ describe('Operational safety check gate', () => {
     expect(rejected.body.event.status).toBe('awaiting_safety_approval');
     expect((await OperationalSafetyCheck.findOne({ where: { eventId: another.id } })).status).toBe('rejected');
     expect((await request(app).post(`/api/events/${another.id}/proceed-to-preparation`).set(auth(coordinatorToken))).status).toBe(409);
+  });
+
+  test('blocks safety review when venue arrangements are unresolved', async () => {
+    const unresolved = await eventFor(organiser, coordinator, null);
+
+    const res = await request(app).post(`/api/events/${unresolved.id}/operational-safety-check`)
+      .set(auth(coordinatorToken)).send(submission());
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: 'Venue arrangements must be confirmed before an operational safety check.',
+      arrangements: { pendingCount: 0, approvedCount: 0 },
+    });
+    expect(await OperationalSafetyCheck.findOne({ where: { eventId: unresolved.id } })).toBeNull();
+    expect((await Event.findByPk(unresolved.id)).status).toBe('planning');
+  });
+
+  test('rejects safety-check detail access by an unassigned coordinator', async () => {
+    const targetEvent = await pendingEvent();
+
+    const res = await request(app).get(`/api/events/${targetEvent.id}/operational-safety-check`)
+      .set(auth(otherCoordinatorToken));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Forbidden. You do not have access to this resource.');
+  });
+
+  test('rejects safety-check detail request for an unknown event', async () => {
+    const res = await request(app).get('/api/events/00000000-0000-4000-8000-000000000000/operational-safety-check')
+      .set(auth(safetyToken));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Event not found.');
+  });
+
+  test('rejects safety-check detail request when no check exists', async () => {
+    const targetEvent = await eventFor(organiser, coordinator, venue);
+
+    const res = await request(app).get(`/api/events/${targetEvent.id}/operational-safety-check`)
+      .set(auth(safetyToken));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Operational safety check not found.');
+  });
+
+  test('rejects a reject decision without a required reason and preserves state', async () => {
+    const targetEvent = await pendingEvent();
+
+    const res = await request(app).patch(`/api/events/${targetEvent.id}/operational-safety-check/decision`)
+      .set(auth(safetyToken)).send({ decision: 'reject' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('reason is required when rejecting or requesting changes.');
+    expect((await OperationalSafetyCheck.findOne({ where: { eventId: targetEvent.id } })).status).toBe('pending');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('awaiting_safety_approval');
+  });
+
+  test('rejects a request_changes decision without a required reason and preserves state', async () => {
+    const targetEvent = await pendingEvent();
+
+    const res = await request(app).patch(`/api/events/${targetEvent.id}/operational-safety-check/decision`)
+      .set(auth(safetyToken)).send({ decision: 'request_changes' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('reason is required when rejecting or requesting changes.');
+    expect((await OperationalSafetyCheck.findOne({ where: { eventId: targetEvent.id } })).status).toBe('pending');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('awaiting_safety_approval');
+  });
+
+  test('rejects a second decision on an already-approved safety check', async () => {
+    const targetEvent = await pendingEvent();
+    await approveSafetyCheck(targetEvent);
+
+    const res = await request(app).patch(`/api/events/${targetEvent.id}/operational-safety-check/decision`)
+      .set(auth(safetyToken)).send({ decision: 'reject', reason: 'Late second decision.' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Only a pending safety check can be decided (this one is approved).');
+    expect((await OperationalSafetyCheck.findOne({ where: { eventId: targetEvent.id } })).status).toBe('approved');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('confirmed');
+  });
+
+  test('rejects repeated transition into preparation', async () => {
+    const targetEvent = await pendingEvent();
+    await approveSafetyCheck(targetEvent);
+    expect((await request(app).post(`/api/events/${targetEvent.id}/proceed-to-preparation`).set(auth(coordinatorToken))).status).toBe(200);
+
+    const res = await request(app).post(`/api/events/${targetEvent.id}/proceed-to-preparation`).set(auth(coordinatorToken));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Event is already in preparation.');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('preparation');
+  });
+
+  test('rejects preparation by an unassigned coordinator', async () => {
+    const targetEvent = await pendingEvent();
+    await approveSafetyCheck(targetEvent);
+
+    const res = await request(app).post(`/api/events/${targetEvent.id}/proceed-to-preparation`).set(auth(otherCoordinatorToken));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Forbidden. You do not have access to this resource.');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('confirmed');
+  });
+
+  test('rejects preparation for a completed event', async () => {
+    const targetEvent = await pendingEvent();
+    await approveSafetyCheck(targetEvent);
+    await targetEvent.update({ status: 'completed' });
+
+    const res = await request(app).post(`/api/events/${targetEvent.id}/proceed-to-preparation`).set(auth(coordinatorToken));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Cannot begin preparation for a completed event.');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('completed');
+  });
+
+  test('rejects preparation for a cancelled event', async () => {
+    const targetEvent = await pendingEvent();
+    await approveSafetyCheck(targetEvent);
+    await targetEvent.update({ status: 'cancelled' });
+
+    const res = await request(app).post(`/api/events/${targetEvent.id}/proceed-to-preparation`).set(auth(coordinatorToken));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Cannot begin preparation for a cancelled event.');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('cancelled');
+  });
+
+  test('rejects duplicate safety-review submission while a check is pending', async () => {
+    const targetEvent = await pendingEvent();
+
+    const res = await request(app).post(`/api/events/${targetEvent.id}/operational-safety-check`)
+      .set(auth(coordinatorToken)).send(submission());
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Operational safety check is already pending.');
+    expect((await OperationalSafetyCheck.findOne({ where: { eventId: targetEvent.id } })).status).toBe('pending');
+    expect((await Event.findByPk(targetEvent.id)).status).toBe('awaiting_safety_approval');
   });
 });
