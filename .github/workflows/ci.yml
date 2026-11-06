@@ -1,14 +1,20 @@
-name: Jest CI
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
+    name: Build & test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20]
 
     services:
       postgres:
@@ -16,35 +22,50 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          POSTGRES_DB: connectsphere
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
+      NODE_ENV: test
       DB_HOST: localhost
       DB_PORT: 5432
-      DB_NAME: postgres
+      DB_NAME: connectsphere
       DB_USER: postgres
       DB_PASSWORD: postgres
-      TEST_DB_ADMIN_NAME: postgres
+      JWT_ACCESS_SECRET: ci_only_access_secret_not_for_production
+      JWT_REFRESH_SECRET: ci_only_refresh_secret_not_for_production
+      EMAIL_ENABLED: "false"
 
     steps:
-      - name: Checkout
+      - name: Check out code
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Jest coverage
+      - name: Check server and scripts parse
+        run: |
+          for f in src/server.js src/app.js scripts/*.js; do node --check "$f"; done
+
+      - name: Run Jest suite with coverage (isolated temp database)
         run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always() && matrix.node == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: ignore
